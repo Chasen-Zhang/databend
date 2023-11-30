@@ -273,6 +273,11 @@ build_exceptions! {
     IllegalFileFormat(2508),
     FileFormatAlreadyExists(2509),
 
+    // Connection error codes.
+    UnknownConnection(2510),
+    IllegalConnection(2511),
+    ConnectionAlreadyExists(2512),
+
     // User defined function error codes.
     IllegalUDFFormat(2601),
     UnknownUDF(2602),
@@ -309,6 +314,13 @@ build_exceptions! {
     UnknownIndex(2722),
     DropIndexWithDropTime(2723),
     GetIndexWithDropTime(2724),
+
+    // Stream error codes.
+    UnknownStream(2730),
+    UnknownStreamId(2731),
+    StreamAlreadyExists(2732),
+    IllegalStream(2733),
+    StreamVersionMismatched(2734),
 
     // Variable error codes.
     UnknownVariable(2801),

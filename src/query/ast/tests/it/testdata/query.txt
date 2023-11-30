@@ -16,7 +16,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -24,9 +24,9 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: Some(
-                        [
-                            Name(
+                    column_filter: Some(
+                        Excludes(
+                            [
                                 Identifier {
                                     name: "c1",
                                     quote: None,
@@ -34,11 +34,11 @@ Query {
                                         17..19,
                                     ),
                                 },
-                            ),
-                        ],
+                            ],
+                        ),
                     ),
                 },
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Identifier(
                             Identifier {
@@ -55,9 +55,9 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: Some(
-                        [
-                            Name(
+                    column_filter: Some(
+                        Excludes(
+                            [
                                 Identifier {
                                     name: "c2",
                                     quote: None,
@@ -65,8 +65,6 @@ Query {
                                         34..36,
                                     ),
                                 },
-                            ),
-                            Name(
                                 Identifier {
                                     name: "c3",
                                     quote: None,
@@ -74,8 +72,6 @@ Query {
                                         38..40,
                                     ),
                                 },
-                            ),
-                            Name(
                                 Identifier {
                                     name: "c4",
                                     quote: None,
@@ -83,8 +79,8 @@ Query {
                                         42..44,
                                     ),
                                 },
-                            ),
-                        ],
+                            ],
+                        ),
                     ),
                 },
             ],
@@ -197,6 +193,178 @@ Query {
 
 
 ---------- Input ----------
+select columns('abc'), columns(a -> length(a) = 3) from t
+---------- Output ---------
+SELECT COLUMNS(_t -> (_t REGEXP 'abc')), COLUMNS(a -> (length(a) = 3)) FROM t
+---------- AST ------------
+Query {
+    span: Some(
+        0..57,
+    ),
+    with: None,
+    body: Select(
+        SelectStmt {
+            span: Some(
+                0..57,
+            ),
+            hints: None,
+            distinct: false,
+            select_list: [
+                StarColumns {
+                    qualified: [
+                        Star(
+                            Some(
+                                7..14,
+                            ),
+                        ),
+                    ],
+                    column_filter: Some(
+                        Lambda(
+                            Lambda {
+                                params: [
+                                    Identifier {
+                                        name: "_t",
+                                        quote: None,
+                                        span: None,
+                                    },
+                                ],
+                                expr: BinaryOp {
+                                    span: Some(
+                                        7..14,
+                                    ),
+                                    op: Regexp,
+                                    left: ColumnRef {
+                                        span: None,
+                                        database: None,
+                                        table: None,
+                                        column: Name(
+                                            Identifier {
+                                                name: "_t",
+                                                quote: None,
+                                                span: None,
+                                            },
+                                        ),
+                                    },
+                                    right: Literal {
+                                        span: Some(
+                                            7..14,
+                                        ),
+                                        lit: String(
+                                            "abc",
+                                        ),
+                                    },
+                                },
+                            },
+                        ),
+                    ),
+                },
+                StarColumns {
+                    qualified: [
+                        Star(
+                            Some(
+                                23..30,
+                            ),
+                        ),
+                    ],
+                    column_filter: Some(
+                        Lambda(
+                            Lambda {
+                                params: [
+                                    Identifier {
+                                        name: "a",
+                                        quote: None,
+                                        span: Some(
+                                            31..32,
+                                        ),
+                                    },
+                                ],
+                                expr: BinaryOp {
+                                    span: Some(
+                                        46..47,
+                                    ),
+                                    op: Eq,
+                                    left: FunctionCall {
+                                        span: Some(
+                                            36..45,
+                                        ),
+                                        distinct: false,
+                                        name: Identifier {
+                                            name: "length",
+                                            quote: None,
+                                            span: Some(
+                                                36..42,
+                                            ),
+                                        },
+                                        args: [
+                                            ColumnRef {
+                                                span: Some(
+                                                    43..44,
+                                                ),
+                                                database: None,
+                                                table: None,
+                                                column: Name(
+                                                    Identifier {
+                                                        name: "a",
+                                                        quote: None,
+                                                        span: Some(
+                                                            43..44,
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                        ],
+                                        params: [],
+                                        window: None,
+                                        lambda: None,
+                                    },
+                                    right: Literal {
+                                        span: Some(
+                                            48..49,
+                                        ),
+                                        lit: UInt64(
+                                            3,
+                                        ),
+                                    },
+                                },
+                            },
+                        ),
+                    ),
+                },
+            ],
+            from: [
+                Table {
+                    span: Some(
+                        56..57,
+                    ),
+                    catalog: None,
+                    database: None,
+                    table: Identifier {
+                        name: "t",
+                        quote: None,
+                        span: Some(
+                            56..57,
+                        ),
+                    },
+                    alias: None,
+                    travel_point: None,
+                    pivot: None,
+                    unpivot: None,
+                },
+            ],
+            selection: None,
+            group_by: None,
+            having: None,
+            window_list: None,
+        },
+    ),
+    order_by: [],
+    limit: [],
+    offset: None,
+    ignore_result: false,
+}
+
+
+---------- Input ----------
 select * from customer inner join orders
 ---------- Output ---------
 SELECT * FROM customer INNER JOIN orders
@@ -214,7 +382,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -222,7 +390,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -303,7 +471,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -311,7 +479,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -392,7 +560,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -400,7 +568,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -520,7 +688,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -528,7 +696,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -657,7 +825,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -665,7 +833,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -803,7 +971,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -811,7 +979,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -892,7 +1060,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -900,7 +1068,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -1118,7 +1286,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            40..45,
+                            40..42,
                         ),
                         database: None,
                         table: Some(
@@ -1171,7 +1339,7 @@ Query {
                     op: Gt,
                     left: ColumnRef {
                         span: Some(
-                            61..66,
+                            61..63,
                         ),
                         database: None,
                         table: Some(
@@ -1333,7 +1501,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            53..58,
+                            53..55,
                         ),
                         database: None,
                         table: Some(
@@ -1386,7 +1554,7 @@ Query {
                     op: Gt,
                     left: ColumnRef {
                         span: Some(
-                            74..79,
+                            74..76,
                         ),
                         database: None,
                         table: Some(
@@ -1540,7 +1708,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            36..40,
+                            36..38,
                         ),
                         database: None,
                         table: Some(
@@ -1593,7 +1761,7 @@ Query {
                     op: Gt,
                     left: ColumnRef {
                         span: Some(
-                            56..60,
+                            56..58,
                         ),
                         database: None,
                         table: Some(
@@ -1769,7 +1937,7 @@ Query {
                                 hints: None,
                                 distinct: false,
                                 select_list: [
-                                    QualifiedName {
+                                    StarColumns {
                                         qualified: [
                                             Star(
                                                 Some(
@@ -1777,7 +1945,7 @@ Query {
                                                 ),
                                             ),
                                         ],
-                                        exclude: None,
+                                        column_filter: None,
                                     },
                                 ],
                                 from: [
@@ -1937,7 +2105,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            128..133,
+                            128..130,
                         ),
                         database: None,
                         table: Some(
@@ -1964,7 +2132,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            135..139,
+                            135..137,
                         ),
                         database: None,
                         table: Some(
@@ -1991,7 +2159,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            141..145,
+                            141..143,
                         ),
                         database: None,
                         table: Some(
@@ -2080,7 +2248,7 @@ Query {
                     op: Gt,
                     left: ColumnRef {
                         span: Some(
-                            168..173,
+                            168..170,
                         ),
                         database: None,
                         table: Some(
@@ -2305,7 +2473,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            75..80,
+                            75..77,
                         ),
                         database: None,
                         table: Some(
@@ -2491,7 +2659,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            54..57,
+                            54..55,
                         ),
                         database: None,
                         table: Some(
@@ -2518,7 +2686,7 @@ Query {
                 AliasedExpr {
                     expr: ColumnRef {
                         span: Some(
-                            59..62,
+                            59..60,
                         ),
                         database: None,
                         table: Some(
@@ -2751,6 +2919,7 @@ Query {
                     span: Some(
                         125..518,
                     ),
+                    lateral: false,
                     subquery: Query {
                         span: Some(
                             147..488,
@@ -3142,7 +3311,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -3150,7 +3319,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -3187,7 +3356,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -3195,7 +3364,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -3258,7 +3427,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -3266,7 +3435,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -3303,7 +3472,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -3311,7 +3480,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -3381,7 +3550,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -3389,7 +3558,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -3426,7 +3595,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -3434,7 +3603,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -3473,7 +3642,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -3481,7 +3650,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -3551,7 +3720,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -3559,7 +3728,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -3596,7 +3765,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -3604,7 +3773,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -3643,7 +3812,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -3651,7 +3820,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -3714,7 +3883,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -3722,7 +3891,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -3766,7 +3935,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -3774,7 +3943,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -3811,7 +3980,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -3819,7 +3988,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -3891,7 +4060,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -3899,7 +4068,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -3936,7 +4105,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -3944,7 +4113,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -3983,7 +4152,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -3991,7 +4160,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -4054,7 +4223,7 @@ Query {
                     hints: None,
                     distinct: false,
                     select_list: [
-                        QualifiedName {
+                        StarColumns {
                             qualified: [
                                 Star(
                                     Some(
@@ -4062,7 +4231,7 @@ Query {
                                     ),
                                 ),
                             ],
-                            exclude: None,
+                            column_filter: None,
                         },
                     ],
                     from: [
@@ -4106,7 +4275,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -4114,7 +4283,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -4151,7 +4320,7 @@ Query {
                             hints: None,
                             distinct: false,
                             select_list: [
-                                QualifiedName {
+                                StarColumns {
                                     qualified: [
                                         Star(
                                             Some(
@@ -4159,7 +4328,7 @@ Query {
                                             ),
                                         ),
                                     ],
-                                    exclude: None,
+                                    column_filter: None,
                                 },
                             ],
                             from: [
@@ -4217,7 +4386,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -4225,7 +4394,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -4233,6 +4402,7 @@ Query {
                     span: Some(
                         14..48,
                     ),
+                    lateral: false,
                     subquery: Query {
                         span: Some(
                             26..32,
@@ -4253,7 +4423,7 @@ Query {
                                         hints: None,
                                         distinct: false,
                                         select_list: [
-                                            QualifiedName {
+                                            StarColumns {
                                                 qualified: [
                                                     Star(
                                                         Some(
@@ -4261,7 +4431,7 @@ Query {
                                                         ),
                                                     ),
                                                 ],
-                                                exclude: None,
+                                                column_filter: None,
                                             },
                                         ],
                                         from: [],
@@ -4279,7 +4449,7 @@ Query {
                                         hints: None,
                                         distinct: false,
                                         select_list: [
-                                            QualifiedName {
+                                            StarColumns {
                                                 qualified: [
                                                     Star(
                                                         Some(
@@ -4287,7 +4457,7 @@ Query {
                                                         ),
                                                     ),
                                                 ],
-                                                exclude: None,
+                                                column_filter: None,
                                             },
                                         ],
                                         from: [],
@@ -4349,7 +4519,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -4357,7 +4527,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -4365,6 +4535,7 @@ Query {
                     span: Some(
                         14..50,
                     ),
+                    lateral: false,
                     subquery: Query {
                         span: Some(
                             27..33,
@@ -4385,7 +4556,7 @@ Query {
                                         hints: None,
                                         distinct: false,
                                         select_list: [
-                                            QualifiedName {
+                                            StarColumns {
                                                 qualified: [
                                                     Star(
                                                         Some(
@@ -4393,7 +4564,7 @@ Query {
                                                         ),
                                                     ),
                                                 ],
-                                                exclude: None,
+                                                column_filter: None,
                                             },
                                         ],
                                         from: [],
@@ -4411,7 +4582,7 @@ Query {
                                         hints: None,
                                         distinct: false,
                                         select_list: [
-                                            QualifiedName {
+                                            StarColumns {
                                                 qualified: [
                                                     Star(
                                                         Some(
@@ -4419,7 +4590,7 @@ Query {
                                                         ),
                                                     ),
                                                 ],
-                                                exclude: None,
+                                                column_filter: None,
                                             },
                                         ],
                                         from: [],
@@ -4481,7 +4652,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -4489,7 +4660,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -4497,6 +4668,7 @@ Query {
                     span: Some(
                         14..54,
                     ),
+                    lateral: false,
                     subquery: Query {
                         span: Some(
                             15..32,
@@ -4510,7 +4682,7 @@ Query {
                                 hints: None,
                                 distinct: false,
                                 select_list: [
-                                    QualifiedName {
+                                    StarColumns {
                                         qualified: [
                                             Star(
                                                 Some(
@@ -4518,7 +4690,7 @@ Query {
                                                 ),
                                             ),
                                         ],
-                                        exclude: None,
+                                        column_filter: None,
                                     },
                                 ],
                                 from: [
@@ -4638,7 +4810,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -4646,7 +4818,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -4799,7 +4971,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -4807,7 +4979,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -4929,7 +5101,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -4937,7 +5109,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -4945,6 +5117,7 @@ Query {
                     span: Some(
                         14..25,
                     ),
+                    lateral: false,
                     name: Identifier {
                         name: "range",
                         quote: None,
@@ -5509,7 +5682,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -5517,7 +5690,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -5525,6 +5698,7 @@ Query {
                     span: Some(
                         14..56,
                     ),
+                    lateral: false,
                     subquery: Query {
                         span: Some(
                             16..33,
@@ -5538,7 +5712,7 @@ Query {
                                 hints: None,
                                 distinct: false,
                                 select_list: [
-                                    QualifiedName {
+                                    StarColumns {
                                         qualified: [
                                             Star(
                                                 Some(
@@ -5546,7 +5720,7 @@ Query {
                                                 ),
                                             ),
                                         ],
-                                        exclude: None,
+                                        column_filter: None,
                                     },
                                 ],
                                 from: [
@@ -5666,7 +5840,7 @@ Query {
             hints: None,
             distinct: false,
             select_list: [
-                QualifiedName {
+                StarColumns {
                     qualified: [
                         Star(
                             Some(
@@ -5674,7 +5848,7 @@ Query {
                             ),
                         ),
                     ],
-                    exclude: None,
+                    column_filter: None,
                 },
             ],
             from: [
@@ -5682,6 +5856,7 @@ Query {
                     span: Some(
                         14..55,
                     ),
+                    lateral: false,
                     subquery: Query {
                         span: Some(
                             15..44,
@@ -5892,6 +6067,291 @@ Query {
             ),
         },
     ],
+    offset: None,
+    ignore_result: false,
+}
+
+
+---------- Input ----------
+select * from t left join lateral(select 1) on true, lateral(select 2)
+---------- Output ---------
+SELECT * FROM t LEFT OUTER JOIN LATERAL (SELECT 1) ON TRUE, LATERAL (SELECT 2)
+---------- AST ------------
+Query {
+    span: Some(
+        0..70,
+    ),
+    with: None,
+    body: Select(
+        SelectStmt {
+            span: Some(
+                0..70,
+            ),
+            hints: None,
+            distinct: false,
+            select_list: [
+                StarColumns {
+                    qualified: [
+                        Star(
+                            Some(
+                                7..8,
+                            ),
+                        ),
+                    ],
+                    column_filter: None,
+                },
+            ],
+            from: [
+                Join {
+                    span: Some(
+                        16..25,
+                    ),
+                    join: Join {
+                        op: LeftOuter,
+                        condition: On(
+                            Literal {
+                                span: Some(
+                                    47..51,
+                                ),
+                                lit: Boolean(
+                                    true,
+                                ),
+                            },
+                        ),
+                        left: Table {
+                            span: Some(
+                                14..15,
+                            ),
+                            catalog: None,
+                            database: None,
+                            table: Identifier {
+                                name: "t",
+                                quote: None,
+                                span: Some(
+                                    14..15,
+                                ),
+                            },
+                            alias: None,
+                            travel_point: None,
+                            pivot: None,
+                            unpivot: None,
+                        },
+                        right: Subquery {
+                            span: Some(
+                                26..43,
+                            ),
+                            lateral: true,
+                            subquery: Query {
+                                span: Some(
+                                    34..42,
+                                ),
+                                with: None,
+                                body: Select(
+                                    SelectStmt {
+                                        span: Some(
+                                            34..42,
+                                        ),
+                                        hints: None,
+                                        distinct: false,
+                                        select_list: [
+                                            AliasedExpr {
+                                                expr: Literal {
+                                                    span: Some(
+                                                        41..42,
+                                                    ),
+                                                    lit: UInt64(
+                                                        1,
+                                                    ),
+                                                },
+                                                alias: None,
+                                            },
+                                        ],
+                                        from: [],
+                                        selection: None,
+                                        group_by: None,
+                                        having: None,
+                                        window_list: None,
+                                    },
+                                ),
+                                order_by: [],
+                                limit: [],
+                                offset: None,
+                                ignore_result: false,
+                            },
+                            alias: None,
+                        },
+                    },
+                },
+                Subquery {
+                    span: Some(
+                        53..70,
+                    ),
+                    lateral: true,
+                    subquery: Query {
+                        span: Some(
+                            61..69,
+                        ),
+                        with: None,
+                        body: Select(
+                            SelectStmt {
+                                span: Some(
+                                    61..69,
+                                ),
+                                hints: None,
+                                distinct: false,
+                                select_list: [
+                                    AliasedExpr {
+                                        expr: Literal {
+                                            span: Some(
+                                                68..69,
+                                            ),
+                                            lit: UInt64(
+                                                2,
+                                            ),
+                                        },
+                                        alias: None,
+                                    },
+                                ],
+                                from: [],
+                                selection: None,
+                                group_by: None,
+                                having: None,
+                                window_list: None,
+                            },
+                        ),
+                        order_by: [],
+                        limit: [],
+                        offset: None,
+                        ignore_result: false,
+                    },
+                    alias: None,
+                },
+            ],
+            selection: None,
+            group_by: None,
+            having: None,
+            window_list: None,
+        },
+    ),
+    order_by: [],
+    limit: [],
+    offset: None,
+    ignore_result: false,
+}
+
+
+---------- Input ----------
+select * from t, lateral flatten(input => u.col) f
+---------- Output ---------
+SELECT * FROM t, LATERAL flatten(input=>u.col) AS f
+---------- AST ------------
+Query {
+    span: Some(
+        0..50,
+    ),
+    with: None,
+    body: Select(
+        SelectStmt {
+            span: Some(
+                0..50,
+            ),
+            hints: None,
+            distinct: false,
+            select_list: [
+                StarColumns {
+                    qualified: [
+                        Star(
+                            Some(
+                                7..8,
+                            ),
+                        ),
+                    ],
+                    column_filter: None,
+                },
+            ],
+            from: [
+                Table {
+                    span: Some(
+                        14..15,
+                    ),
+                    catalog: None,
+                    database: None,
+                    table: Identifier {
+                        name: "t",
+                        quote: None,
+                        span: Some(
+                            14..15,
+                        ),
+                    },
+                    alias: None,
+                    travel_point: None,
+                    pivot: None,
+                    unpivot: None,
+                },
+                TableFunction {
+                    span: Some(
+                        17..50,
+                    ),
+                    lateral: true,
+                    name: Identifier {
+                        name: "flatten",
+                        quote: None,
+                        span: Some(
+                            25..32,
+                        ),
+                    },
+                    params: [],
+                    named_params: [
+                        (
+                            "input",
+                            ColumnRef {
+                                span: Some(
+                                    42..43,
+                                ),
+                                database: None,
+                                table: Some(
+                                    Identifier {
+                                        name: "u",
+                                        quote: None,
+                                        span: Some(
+                                            42..43,
+                                        ),
+                                    },
+                                ),
+                                column: Name(
+                                    Identifier {
+                                        name: "col",
+                                        quote: None,
+                                        span: Some(
+                                            44..47,
+                                        ),
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    alias: Some(
+                        TableAlias {
+                            name: Identifier {
+                                name: "f",
+                                quote: None,
+                                span: Some(
+                                    49..50,
+                                ),
+                            },
+                            columns: [],
+                        },
+                    ),
+                },
+            ],
+            selection: None,
+            group_by: None,
+            having: None,
+            window_list: None,
+        },
+    ),
+    order_by: [],
+    limit: [],
     offset: None,
     ignore_result: false,
 }

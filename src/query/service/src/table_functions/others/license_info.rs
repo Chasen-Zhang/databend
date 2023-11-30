@@ -45,8 +45,8 @@ use common_license::license_manager::get_license_manager;
 use common_meta_app::schema::TableIdent;
 use common_meta_app::schema::TableInfo;
 use common_meta_app::schema::TableMeta;
-use common_pipeline_core::processors::port::OutputPort;
-use common_pipeline_core::processors::processor::ProcessorPtr;
+use common_pipeline_core::processors::OutputPort;
+use common_pipeline_core::processors::ProcessorPtr;
 use common_pipeline_core::Pipeline;
 use common_pipeline_sources::AsyncSource;
 use common_pipeline_sources::AsyncSourcer;
@@ -229,11 +229,13 @@ impl AsyncSource for LicenseInfoSource {
         let settings = self.ctx.get_settings();
         // sync global changes on distributed node cluster.
         settings.load_global_changes().await?;
-        let license = settings
-            .get_enterprise_license()
-            .map_err_to_code(ErrorCode::LicenseKeyInvalid, || {
-                format!("failed to get license for {}", self.ctx.get_tenant())
-            })?;
+        let license = unsafe {
+            settings
+                .get_enterprise_license()
+                .map_err_to_code(ErrorCode::LicenseKeyInvalid, || {
+                    format!("failed to get license for {}", self.ctx.get_tenant())
+                })?
+        };
 
         get_license_manager()
             .manager

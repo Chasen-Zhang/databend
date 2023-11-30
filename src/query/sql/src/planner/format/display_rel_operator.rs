@@ -78,9 +78,9 @@ impl Display for FormatContext {
                 RelOperator::ProjectSet(_) => write!(f, "ProjectSet"),
                 RelOperator::CteScan(_) => write!(f, "CteScan"),
                 RelOperator::MaterializedCte(_) => write!(f, "MaterializedCte"),
-                RelOperator::Lambda(_) => write!(f, "Lambda"),
                 RelOperator::ConstantTableScan(_) => write!(f, "ConstantTableScan"),
                 RelOperator::AddRowNumber(_) => write!(f, "AddRowNumber"),
+                RelOperator::Udf(_) => write!(f, "Udf"),
             },
             Self::Text(text) => write!(f, "{}", text),
         }
@@ -105,14 +105,25 @@ pub fn format_scalar(scalar: &ScalarExpr) -> String {
         ScalarExpr::ConstantExpr(constant) => constant.value.to_string(),
         ScalarExpr::WindowFunction(win) => win.display_name.clone(),
         ScalarExpr::AggregateFunction(agg) => agg.display_name.clone(),
-        ScalarExpr::LambdaFunction(lambda) => lambda.display_name.clone(),
+        ScalarExpr::LambdaFunction(lambda) => {
+            let args = lambda
+                .args
+                .iter()
+                .map(format_scalar)
+                .collect::<Vec<String>>()
+                .join(", ");
+            format!(
+                "{}({}, {})",
+                &lambda.func_name, args, &lambda.lambda_display,
+            )
+        }
         ScalarExpr::FunctionCall(func) => {
             format!(
                 "{}({})",
                 &func.func_name,
                 func.arguments
                     .iter()
-                    .map(|arg| { format_scalar(arg) })
+                    .map(format_scalar)
                     .collect::<Vec<String>>()
                     .join(", ")
             )
@@ -131,10 +142,13 @@ pub fn format_scalar(scalar: &ScalarExpr) -> String {
                 &udf.func_name,
                 udf.arguments
                     .iter()
-                    .map(|arg| { format_scalar(arg) })
+                    .map(format_scalar)
                     .collect::<Vec<String>>()
                     .join(", ")
             )
+        }
+        ScalarExpr::UDFLambdaCall(udf) => {
+            format!("{}({})", &udf.func_name, format_scalar(&udf.scalar))
         }
     }
 }
@@ -227,7 +241,7 @@ fn scan_to_format_tree(
             metadata: metadata.clone(),
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![
                 FormatTreeNode::new(FormatContext::Text(format!(
                     "table: {}.{}.{}",
@@ -280,7 +294,7 @@ fn logical_get_to_format_tree(
             metadata: metadata.clone(),
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![
                 FormatTreeNode::new(FormatContext::Text(format!(
                     "table: {}.{}.{}",
@@ -366,7 +380,7 @@ pub fn logical_join_to_format_tree(
             metadata,
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![
                 FormatTreeNode::new(FormatContext::Text(format!(
                     "equi conditions: [{}]",
@@ -413,7 +427,7 @@ fn join_to_format_tree(
             metadata,
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![
                 FormatTreeNode::new(FormatContext::Text(format!("build keys: [{}]", build_keys))),
                 FormatTreeNode::new(FormatContext::Text(format!("probe keys: [{}]", probe_keys))),
@@ -450,7 +464,7 @@ fn aggregate_to_format_tree(
             metadata,
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![
                 FormatTreeNode::new(FormatContext::Text(format!(
                     "group items: [{}]",
@@ -493,7 +507,7 @@ fn window_to_format_tree(
             metadata,
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![
                 FormatTreeNode::new(FormatContext::Text(format!(
                     "aggregate function: {}",
@@ -531,7 +545,7 @@ fn filter_to_format_tree(
             metadata,
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![FormatTreeNode::new(FormatContext::Text(format!(
                 "filters: [{}]",
                 scalars
@@ -559,7 +573,7 @@ fn eval_scalar_to_format_tree(
             metadata,
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![FormatTreeNode::new(FormatContext::Text(format!(
                 "scalars: [{}]",
                 scalars
@@ -595,7 +609,7 @@ fn sort_to_format_tree(
             metadata,
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![
                 FormatTreeNode::new(FormatContext::Text(format!("sort keys: [{}]", scalars))),
                 FormatTreeNode::new(FormatContext::Text(format!("limit: [{}]", limit))),
@@ -617,7 +631,7 @@ fn limit_to_format_tree(
             metadata,
             rel_operator: Box::new(op.clone().into()),
         },
-        vec![
+        [
             vec![
                 FormatTreeNode::new(FormatContext::Text(format!("limit: [{}]", limit))),
                 FormatTreeNode::new(FormatContext::Text(format!("offset: [{}]", op.offset))),
@@ -639,7 +653,7 @@ fn exchange_to_format_tree(
                 metadata,
                 rel_operator: Box::new(op.clone().into()),
             },
-            vec![
+            [
                 vec![FormatTreeNode::new(FormatContext::Text(format!(
                     "Exchange(Hash): keys: [{}]",
                     keys.iter()

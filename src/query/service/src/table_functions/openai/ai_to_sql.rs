@@ -38,14 +38,15 @@ use common_meta_app::schema::TableIdent;
 use common_meta_app::schema::TableInfo;
 use common_meta_app::schema::TableMeta;
 use common_openai::OpenAI;
-use common_pipeline_core::processors::port::OutputPort;
-use common_pipeline_core::processors::processor::ProcessorPtr;
+use common_pipeline_core::processors::OutputPort;
+use common_pipeline_core::processors::ProcessorPtr;
 use common_pipeline_core::Pipeline;
 use common_pipeline_sources::AsyncSource;
 use common_pipeline_sources::AsyncSourcer;
 use common_storages_factory::Table;
 use common_storages_fuse::table_functions::string_literal;
 use common_storages_fuse::TableContext;
+use common_storages_stream::stream_table::STREAM_ENGINE;
 use common_storages_view::view_table::VIEW_ENGINE;
 use log::info;
 
@@ -197,7 +198,7 @@ impl AsyncSource for GPT2SQLSource {
         template.push("#".to_string());
 
         for table in catalog.list_tables(tenant.as_str(), &database).await? {
-            let fields = if table.engine() == VIEW_ENGINE {
+            let fields = if matches!(table.engine(), VIEW_ENGINE | STREAM_ENGINE) {
                 continue;
             } else {
                 table.schema().fields().clone()

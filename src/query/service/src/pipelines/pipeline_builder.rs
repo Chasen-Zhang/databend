@@ -19,6 +19,8 @@ use common_exception::ErrorCode;
 use common_exception::Result;
 use common_expression::DataField;
 use common_expression::FunctionContext;
+use common_pipeline_core::Pipeline;
+use common_pipeline_core::PlanScope;
 use common_profile::SharedProcessorProfiles;
 use common_settings::Settings;
 use common_sql::executor::PhysicalPlan;
@@ -27,9 +29,8 @@ use common_sql::IndexType;
 use super::PipelineBuilderData;
 use crate::api::DefaultExchangeInjector;
 use crate::api::ExchangeInjector;
-use crate::pipelines::processors::transforms::hash_join::HashJoinBuildState;
+use crate::pipelines::processors::transforms::HashJoinBuildState;
 use crate::pipelines::processors::transforms::MaterializedCteState;
-use crate::pipelines::Pipeline;
 use crate::pipelines::PipelineBuildResult;
 use crate::sessions::QueryContext;
 
@@ -63,6 +64,7 @@ impl PipelineBuilder {
         ctx: Arc<QueryContext>,
         enable_profiling: bool,
         prof_span_set: SharedProcessorProfiles,
+        scopes: Vec<PlanScope>,
     ) -> PipelineBuilder {
         PipelineBuilder {
             enable_profiling,
@@ -71,7 +73,7 @@ impl PipelineBuilder {
             settings,
             pipelines: vec![],
             join_state: None,
-            main_pipeline: Pipeline::create(),
+            main_pipeline: Pipeline::with_scopes(scopes),
             proc_profs: prof_span_set,
             exchange_injector: DefaultExchangeInjector::create(),
             index: None,
@@ -104,6 +106,8 @@ impl PipelineBuilder {
     }
 
     pub(crate) fn build_pipeline(&mut self, plan: &PhysicalPlan) -> Result<()> {
+        let scope = PlanScope::create(plan.get_id(), plan.name());
+        let _guard = self.main_pipeline.add_plan_scope(scope);
         match plan {
             PhysicalPlan::TableScan(scan) => self.build_table_scan(scan),
             PhysicalPlan::CteScan(scan) => self.build_cte_scan(scan),
@@ -126,7 +130,7 @@ impl PipelineBuilder {
                 self.build_distributed_insert_select(insert_select)
             }
             PhysicalPlan::ProjectSet(project_set) => self.build_project_set(project_set),
-            PhysicalPlan::Lambda(lambda) => self.build_lambda(lambda),
+            PhysicalPlan::Udf(udf) => self.build_udf(udf),
             PhysicalPlan::Exchange(_) => Err(ErrorCode::Internal(
                 "Invalid physical plan with PhysicalPlan::Exchange",
             )),
@@ -176,6 +180,9 @@ impl PipelineBuilder {
             PhysicalPlan::ReclusterSink(recluster_sink) => {
                 self.build_recluster_sink(recluster_sink)
             }
+
+            // Update.
+            PhysicalPlan::UpdateSource(update) => self.build_update_source(update),
         }
     }
 }

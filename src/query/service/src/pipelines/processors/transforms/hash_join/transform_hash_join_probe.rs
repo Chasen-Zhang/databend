@@ -26,12 +26,12 @@ use common_sql::optimizer::ColumnSet;
 use common_sql::plans::JoinType;
 use log::info;
 
-use crate::pipelines::processors::port::InputPort;
-use crate::pipelines::processors::port::OutputPort;
-use crate::pipelines::processors::processor::Event;
 use crate::pipelines::processors::transforms::hash_join::probe_spill::ProbeSpillState;
 use crate::pipelines::processors::transforms::hash_join::HashJoinProbeState;
 use crate::pipelines::processors::transforms::hash_join::ProbeState;
+use crate::pipelines::processors::Event;
+use crate::pipelines::processors::InputPort;
+use crate::pipelines::processors::OutputPort;
 use crate::pipelines::processors::Processor;
 
 #[derive(Debug)]
@@ -219,7 +219,7 @@ impl TransformHashJoinProbe {
 
     async fn reset(&mut self) -> Result<()> {
         self.step = HashJoinProbeStep::Running;
-        // self.probe_state.reset();
+        self.probe_state.reset();
         if (self.join_probe_state.hash_join_state.need_outer_scan()
             || self.join_probe_state.hash_join_state.need_mark_scan())
             && self.join_probe_state.probe_workers.load(Ordering::Relaxed) == 0
@@ -481,8 +481,10 @@ impl Processor for TransformHashJoinProbe {
                         .await?;
                     // Use `non_matched_data` to probe the first round hashtable (if the hashtable isn't empty)
                     if !non_matched_data.is_empty()
-                        && unsafe { &*self.join_probe_state.hash_join_state.build_num_rows.get() }
-                            != &(0_usize)
+                        && unsafe { &*self.join_probe_state.hash_join_state.build_state.get() }
+                            .generation_state
+                            .build_num_rows
+                            != 0
                     {
                         self.input_data.push_back(non_matched_data);
                         self.need_spill = false;

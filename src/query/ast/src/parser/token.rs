@@ -72,7 +72,7 @@ impl<'a> Iterator for Tokenizer<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.lexer.next() {
-            Some(kind) if kind == TokenKind::Error => Some(Err(ErrorCode::SyntaxException(
+            Some(TokenKind::Error) => Some(Err(ErrorCode::SyntaxException(
                 "unable to recognize the rest tokens".to_string(),
             )
             .set_span(Some((self.lexer.span().start..self.source.len()).into())))),
@@ -292,6 +292,12 @@ pub enum TokenKind {
     /// Used as JSON operator.
     #[token("?&")]
     QuestionAnd,
+    /// Used as JSON operator.
+    #[token("<@")]
+    ArrowAt,
+    /// Used as JSON operator.
+    #[token("@>")]
+    AtArrow,
 
     // Keywords
     //
@@ -384,6 +390,8 @@ pub enum TokenKind {
     COMPACT,
     #[token("CONNECTION", ignore(ascii_case))]
     CONNECTION,
+    #[token("CONNECTIONS", ignore(ascii_case))]
+    CONNECTIONS,
     #[token("CONTENT_TYPE", ignore(ascii_case))]
     CONTENT_TYPE,
     #[token("CHAR", ignore(ascii_case))]
@@ -628,8 +636,12 @@ pub enum TokenKind {
     KEY,
     #[token("KILL", ignore(ascii_case))]
     KILL,
+    #[token("LATERAL", ignore(ascii_case))]
+    LATERAL,
     #[token("LOCATION_PREFIX", ignore(ascii_case))]
     LOCATION_PREFIX,
+    #[token("SECONDARY", ignore(ascii_case))]
+    SECONDARY,
     #[token("ROLES", ignore(ascii_case))]
     ROLES,
     /// L2DISTANCE op, from https://github.com/pgvector/pgvector
@@ -771,6 +783,10 @@ pub enum TokenKind {
     MERGE,
     #[token("MATCHED", ignore(ascii_case))]
     MATCHED,
+    #[token("MISSING_FIELD_AS", ignore(ascii_case))]
+    MISSING_FIELD_AS,
+    #[token("NULL_FIELD_AS", ignore(ascii_case))]
+    NULL_FIELD_AS,
     #[token("UNMATCHED", ignore(ascii_case))]
     UNMATCHED,
     #[token("ROW", ignore(ascii_case))]
@@ -813,6 +829,8 @@ pub enum TokenKind {
     RLIKE,
     #[token("RAW", ignore(ascii_case))]
     RAW,
+    #[token("OPTIMIZED", ignore(ascii_case))]
+    OPTIMIZED,
     #[token("SCHEMA", ignore(ascii_case))]
     SCHEMA,
     #[token("SCHEMAS", ignore(ascii_case))]
@@ -879,6 +897,10 @@ pub enum TokenKind {
     STATUS,
     #[token("STORED", ignore(ascii_case))]
     STORED,
+    #[token("STREAM", ignore(ascii_case))]
+    STREAM,
+    #[token("STREAMS", ignore(ascii_case))]
+    STREAMS,
     #[token("STRING", ignore(ascii_case))]
     STRING,
     #[token("SUBSTRING", ignore(ascii_case))]
@@ -891,6 +913,8 @@ pub enum TokenKind {
     SOUNDS,
     #[token("SYNC", ignore(ascii_case))]
     SYNC,
+    #[token("STORAGE_TYPE", ignore(ascii_case))]
+    STORAGE_TYPE,
     #[token("TABLE", ignore(ascii_case))]
     TABLE,
     #[token("TABLES", ignore(ascii_case))]
@@ -1033,8 +1057,6 @@ pub enum TokenKind {
     WRITE,
     #[token("UDF", ignore(ascii_case))]
     UDF,
-    #[token("USAGEUDF", ignore(ascii_case))]
-    USAGEUDF,
     #[token("HANDLER", ignore(ascii_case))]
     HANDLER,
     #[token("LANGUAGE", ignore(ascii_case))]
@@ -1057,6 +1079,16 @@ pub enum TokenKind {
     SUSPEND,
     #[token("RESUME", ignore(ascii_case))]
     RESUME,
+    #[token("PIPE", ignore(ascii_case))]
+    PIPE,
+    #[token("AUTO_INGEST", ignore(ascii_case))]
+    AUTO_INGEST,
+    #[token("PIPE_EXECUTION_PAUSED", ignore(ascii_case))]
+    PIPE_EXECUTION_PAUSED,
+    #[token("PREFIX", ignore(ascii_case))]
+    PREFIX,
+    #[token("MODIFIED_AFTER", ignore(ascii_case))]
+    MODIFIED_AFTER,
 }
 
 // Reference: https://www.postgresql.org/docs/current/sql-keywords-appendix.html
@@ -1160,7 +1192,7 @@ impl TokenKind {
             // | TokenKind::CURRENT_DATE
             // | TokenKind::CURRENT_ROLE
             // | TokenKind::CURRENT_TIME
-            | TokenKind::CURRENT_TIMESTAMP
+            // | TokenKind::CURRENT_TIMESTAMP
             // | TokenKind::CURRENT_USER
             // | TokenKind::DEC
             // | TokenKind::DECIMAL
@@ -1188,7 +1220,7 @@ impl TokenKind {
             | TokenKind::INT
             | TokenKind::INTEGER
             | TokenKind::INTERVAL
-            // | TokenKind::LATERAL
+            | TokenKind::LATERAL
             | TokenKind::LEADING
             // | TokenKind::LEAST
             // | TokenKind::LOCALTIME
@@ -1305,6 +1337,7 @@ impl TokenKind {
             // | TokenKind::COLUMN
             // | TokenKind::CONCURRENTLY
             // | TokenKind::CONSTRAINT
+            | TokenKind::CONNECTION
             | TokenKind::CROSS
             // | TokenKind::CURRENT_CATALOG
             // | TokenKind::CURRENT_DATE
@@ -1329,7 +1362,7 @@ impl TokenKind {
             | TokenKind::INNER
             | TokenKind::IS
             | TokenKind::JOIN
-            // | TokenKind::LATERAL
+            | TokenKind::LATERAL
             | TokenKind::LEADING
             | TokenKind::LEFT
             | TokenKind::LIKE
@@ -1404,6 +1437,8 @@ impl TokenKind {
             | TokenKind::MASKING
             | TokenKind::POLICY
             | TokenKind::TASK
+            | TokenKind::PIPE
+            | TokenKind::STREAM
             if !after_as => true,
             _ => false
         }

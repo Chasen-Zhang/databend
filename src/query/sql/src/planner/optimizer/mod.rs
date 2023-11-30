@@ -31,6 +31,7 @@ pub mod s_expr;
 mod util;
 
 pub use cascades::CascadesOptimizer;
+pub use heuristic::FlattenInfo;
 pub use heuristic::HeuristicOptimizer;
 pub use heuristic::SubqueryRewriter;
 pub use heuristic::DEFAULT_REWRITE_RULES;
@@ -48,4 +49,5 @@ pub use rule::try_push_down_filter_join;
 pub use rule::RuleFactory;
 pub use rule::RuleID;
 pub use rule::RuleSet;
+pub use s_expr::get_udf_names;
 pub use s_expr::SExpr;

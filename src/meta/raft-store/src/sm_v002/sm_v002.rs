@@ -23,7 +23,6 @@ use common_meta_kvapi::kvapi::KVStream;
 use common_meta_kvapi::kvapi::MGetKVReply;
 use common_meta_kvapi::kvapi::UpsertKVReply;
 use common_meta_kvapi::kvapi::UpsertKVReq;
-use common_meta_stoerr::MetaBytesError;
 use common_meta_types::protobuf::StreamItem;
 use common_meta_types::AppliedState;
 use common_meta_types::Entry;
@@ -167,9 +166,7 @@ impl SMV002 {
             let ent: RaftStoreEntry = serde_json::from_str(&l)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-            importer
-                .import(ent)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            importer.import(ent)?;
         }
 
         let level_data = importer.commit();
@@ -197,7 +194,14 @@ impl SMV002 {
                 return Ok(());
             }
 
-            sm.replace(LeveledMap::new(level_data));
+            let mut levels = LeveledMap::new(level_data);
+            // Push all data down to frozen level, create a new empty writable level.
+            // So that the top writable level is small enough.
+            // Writable level can not return a static stream for `range()`. It has to copy all data in the range.
+            // See the MapApiRO::range() implementation for Level.
+            levels.freeze_writable();
+
+            sm.replace(levels);
         }
 
         info!(
@@ -208,7 +212,7 @@ impl SMV002 {
         Ok(())
     }
 
-    pub fn import(data: impl Iterator<Item = RaftStoreEntry>) -> Result<Level, MetaBytesError> {
+    pub fn import(data: impl Iterator<Item = RaftStoreEntry>) -> Result<Level, io::Error> {
         let mut importer = Self::new_importer();
 
         for ent in data {
@@ -306,11 +310,8 @@ impl SMV002 {
     pub(crate) async fn list_expire_index(
         &self,
     ) -> Result<impl Stream<Item = Result<(ExpireKey, String), io::Error>> + '_, io::Error> {
-        let strm = self
-            .levels
-            .expire_map()
-            .range(&self.expire_cursor..)
-            .await?;
+        let start = self.expire_cursor;
+        let strm = self.levels.expire_map().range(start..).await?;
 
         let strm = strm
             // Return only non-deleted records

@@ -37,6 +37,7 @@ use common_meta_app::principal::StageFileFormatType;
 use indexmap::IndexMap;
 use log::warn;
 
+use super::Finder;
 use crate::binder::wrap_cast;
 use crate::binder::ColumnBindingBuilder;
 use crate::binder::CteInfo;
@@ -44,6 +45,8 @@ use crate::normalize_identifier;
 use crate::optimizer::SExpr;
 use crate::plans::CreateFileFormatPlan;
 use crate::plans::CreateRolePlan;
+use crate::plans::DescConnectionPlan;
+use crate::plans::DropConnectionPlan;
 use crate::plans::DropFileFormatPlan;
 use crate::plans::DropRolePlan;
 use crate::plans::DropStagePlan;
@@ -53,10 +56,12 @@ use crate::plans::MaterializedCte;
 use crate::plans::Plan;
 use crate::plans::RelOperator;
 use crate::plans::RewriteKind;
+use crate::plans::ShowConnectionsPlan;
 use crate::plans::ShowFileFormatsPlan;
 use crate::plans::ShowGrantsPlan;
 use crate::plans::ShowRolesPlan;
 use crate::plans::UseDatabasePlan;
+use crate::plans::Visitor;
 use crate::BindContext;
 use crate::ColumnBinding;
 use crate::IndexType;
@@ -75,6 +80,7 @@ use crate::Visibility;
 /// - Build `Metadata`
 pub struct Binder {
     pub ctx: Arc<dyn TableContext>,
+    pub dialect: Dialect,
     pub catalogs: Arc<CatalogManager>,
     pub name_resolution_ctx: NameResolutionContext,
     pub metadata: MetadataRef,
@@ -97,8 +103,10 @@ impl<'a> Binder {
         name_resolution_ctx: NameResolutionContext,
         metadata: MetadataRef,
     ) -> Self {
+        let dialect = ctx.get_settings().get_sql_dialect().unwrap_or_default();
         Binder {
             ctx,
+            dialect,
             catalogs,
             name_resolution_ctx,
             metadata,
@@ -133,7 +141,7 @@ impl<'a> Binder {
         bind_context: &mut BindContext,
         hints: &Hint,
     ) -> Result<()> {
-        let mut type_checker = TypeChecker::new(
+        let mut type_checker = TypeChecker::try_create(
             bind_context,
             self.ctx.clone(),
             &self.name_resolution_ctx,
@@ -141,7 +149,7 @@ impl<'a> Binder {
             &[],
             false,
             false,
-        );
+        )?;
         let mut hint_settings: HashMap<String, String> = HashMap::new();
         for hint in &hints.hints_list {
             let variable = &hint.name.name;
@@ -424,7 +432,6 @@ impl<'a> Binder {
                     file_format_params: file_format_options.clone().try_into()?,
                 }))
             }
-
             Statement::DropFileFormat {
                 if_exists,
                 name,
@@ -433,6 +440,17 @@ impl<'a> Binder {
                 name: name.clone(),
             })),
             Statement::ShowFileFormats => Plan::ShowFileFormats(Box::new(ShowFileFormatsPlan {})),
+
+            // Connections
+            Statement::CreateConnection(stmt) => self.bind_create_connection(stmt).await?,
+            Statement::DropConnection(stmt) => Plan::DropConnection(Box::new(DropConnectionPlan {
+                if_exists: stmt.if_exists,
+                name: stmt.name.to_string(),
+            })),
+            Statement::DescribeConnection(stmt) => Plan::DescConnection(Box::new(DescConnectionPlan {
+                name: stmt.name.to_string(),
+            })),
+            Statement::ShowConnections(_) => Plan::ShowConnections(Box::new(ShowConnectionsPlan{})),
 
             // UDFs
             Statement::CreateUDF(stmt) => self.bind_create_udf(stmt).await?,
@@ -467,6 +485,9 @@ impl<'a> Binder {
                 role_name,
             } => {
                 self.bind_set_role(bind_context, *is_default, role_name).await?
+            }
+            Statement::SetSecondaryRoles { option } => {
+                self.bind_set_secondary_roles(bind_context, option).await?
             }
 
             Statement::KillStmt { kill_target, object_id } => {
@@ -553,6 +574,25 @@ impl<'a> Binder {
             Statement::ShowTasks(stmt) => {
                 self.bind_show_tasks(stmt).await?
             }
+
+            // Streams
+            Statement::CreateStream(stmt) => self.bind_create_stream(stmt).await?,
+            Statement::DropStream(stmt) => self.bind_drop_stream(stmt).await?,
+            Statement::ShowStreams(stmt) => self.bind_show_streams(bind_context, stmt).await?,
+            Statement::DescribeStream(stmt) => self.bind_describe_stream(bind_context, stmt).await?,
+
+            Statement::CreatePipe(_) => {
+                todo!()
+            }
+            Statement::DescribePipe(_) => {
+                todo!()
+            }
+            Statement::AlterPipe(_) => {
+                todo!()
+            }
+            Statement::DropPipe(_) => {
+                todo!()
+            }
         };
         Ok(plan)
     }
@@ -565,7 +605,7 @@ impl<'a> Binder {
         rewrite_kind_r: RewriteKind,
     ) -> Result<Plan> {
         let tokens = tokenize_sql(query)?;
-        let (stmt, _) = parse_sql(&tokens, Dialect::PostgreSQL)?;
+        let (stmt, _) = parse_sql(&tokens, self.dialect)?;
         let mut plan = self.bind_statement(bind_context, &stmt).await?;
 
         if let Plan::Query { rewrite_kind, .. } = &mut plan {
@@ -617,5 +657,37 @@ impl<'a> Binder {
         self.eq_scalars
             .iter()
             .any(|(l, r)| (l == left && r == right) || (l == right && r == left))
+    }
+
+    pub(crate) fn check_allowed_scalar_expr(&self, scalar: &ScalarExpr) -> Result<bool> {
+        let f = |scalar: &ScalarExpr| {
+            matches!(
+                scalar,
+                ScalarExpr::WindowFunction(_)
+                    | ScalarExpr::AggregateFunction(_)
+                    | ScalarExpr::UDFServerCall(_)
+                    | ScalarExpr::SubqueryExpr(_)
+            )
+        };
+        let mut finder = Finder::new(&f);
+        finder.visit(scalar)?;
+        Ok(finder.scalars().is_empty())
+    }
+
+    pub(crate) fn check_allowed_scalar_expr_with_subquery(
+        &self,
+        scalar: &ScalarExpr,
+    ) -> Result<bool> {
+        let f = |scalar: &ScalarExpr| {
+            matches!(
+                scalar,
+                ScalarExpr::WindowFunction(_)
+                    | ScalarExpr::AggregateFunction(_)
+                    | ScalarExpr::UDFServerCall(_)
+            )
+        };
+        let mut finder = Finder::new(&f);
+        finder.visit(scalar)?;
+        Ok(finder.scalars().is_empty())
     }
 }

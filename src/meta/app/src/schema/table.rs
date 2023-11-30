@@ -599,11 +599,19 @@ pub struct UpsertTableOptionReq {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct UpdateStreamMetaReq {
+    pub stream_id: u64,
+    pub seq: MatchSeq,
+    pub options: BTreeMap<String, String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct UpdateTableMetaReq {
     pub table_id: u64,
     pub seq: MatchSeq,
     pub new_table_meta: TableMeta,
     pub copied_files: Option<UpsertTableCopiedFileReq>,
+    pub update_stream_meta: Vec<UpdateStreamMetaReq>,
     pub deduplicated_label: Option<String>,
 }
 
@@ -737,6 +745,7 @@ pub enum TableInfoFilter {
 pub struct ListDroppedTableReq {
     pub inner: DatabaseNameIdent,
     pub filter: TableInfoFilter,
+    pub limit: Option<usize>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]

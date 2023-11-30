@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use common_catalog::plan::DataSourceInfo;
 use common_catalog::table_context::TableContext;
 use common_exception::ErrorCode;
 use common_exception::Result;
@@ -21,6 +23,7 @@ use common_meta_app::principal::GrantObject;
 use common_meta_app::principal::GrantObjectByID;
 use common_meta_app::principal::UserGrantSet;
 use common_meta_app::principal::UserPrivilegeType;
+use common_sql::optimizer::get_udf_names;
 use common_sql::plans::PresignAction;
 use common_sql::plans::RewriteKind;
 use common_users::RoleCacheManager;
@@ -119,6 +122,18 @@ impl PrivilegeAccess {
 
         session.validate_privilege(object, privileges).await
     }
+
+    async fn check_udf_priv(&self, udf_names: HashSet<&String>) -> Result<()> {
+        for udf in udf_names {
+            self.validate_access(
+                &GrantObject::UDF(udf.clone()),
+                vec![UserPrivilegeType::Usage],
+                false,
+            )
+            .await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -128,11 +143,14 @@ impl AccessChecker for PrivilegeAccess {
         let user = self.ctx.get_current_user()?;
         let (identity, grant_set) = (user.identity().to_string(), user.grants);
         let tenant = self.ctx.get_tenant();
+        let enable_stage_udf_priv_check =
+            self.ctx.get_settings().get_enable_stage_udf_priv_check()?;
 
         match plan {
             Plan::Query {
                 metadata,
                 rewrite_kind,
+                s_expr,
                 ..
             } => {
                 match rewrite_kind {
@@ -143,6 +161,17 @@ impl AccessChecker for PrivilegeAccess {
                         return Ok(());
                     }
                     Some(RewriteKind::ShowTables(database)) => {
+                        let has_priv = has_priv(&tenant, database, None, grant_set).await?;
+                        return if has_priv {
+                            Ok(())
+                        } else {
+                            Err(ErrorCode::PermissionDenied(format!(
+                                "Permission denied, user {} don't have privilege for database {}",
+                                identity, database
+                            )))
+                        };
+                    }
+                    Some(RewriteKind::ShowStreams(database)) => {
                         let has_priv = has_priv(&tenant, database, None, grant_set).await?;
                         return if has_priv {
                             Ok(())
@@ -166,8 +195,70 @@ impl AccessChecker for PrivilegeAccess {
                     }
                     _ => {}
                 };
+                if enable_stage_udf_priv_check {
+                    match s_expr.get_udfs() {
+                        Ok(udfs) => {
+                            if !udfs.is_empty() {
+                                for udf in udfs {
+                                    self.validate_access(
+                                        &GrantObject::UDF(udf.clone()),
+                                        vec![UserPrivilegeType::Usage],
+                                        false,
+                                    ).await?
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            return Err(err.add_message("get udf error on validating access"));
+                        }
+                    }
+                }
+
                 let metadata = metadata.read().clone();
+
                 for table in metadata.tables() {
+
+                        if enable_stage_udf_priv_check && table.is_source_of_stage() {
+                            match table.table().get_data_source_info() {
+                                DataSourceInfo::StageSource(stage_info) => {
+                                    if !stage_info.stage_info.is_from_uri {
+                                        self
+                                            .validate_access(
+                                                &GrantObject::Stage(stage_info.stage_info.stage_name.clone()),
+                                                vec![UserPrivilegeType::Read],
+                                                false,
+                                            )
+                                            .await?;
+                                    }
+                                }
+                                DataSourceInfo::Parquet2Source(stage_info) => {
+                                    if !stage_info.stage_info.is_from_uri {
+                                        self
+                                            .validate_access(
+                                                &GrantObject::Stage(stage_info.stage_info.stage_name.clone()),
+                                                vec![UserPrivilegeType::Read],
+                                                false,
+                                            )
+                                            .await?;
+                                    }
+                                }
+                                DataSourceInfo::ParquetSource(stage_info) => {
+                                    if !stage_info.stage_info.is_from_uri {
+                                        self
+                                            .validate_access(
+                                                &GrantObject::Stage(stage_info.stage_info.stage_name.clone()),
+                                                vec![UserPrivilegeType::Read],
+                                                false,
+                                            )
+                                            .await?;
+                                    }
+                                }
+                                DataSourceInfo::TableSource(_) | DataSourceInfo::ResultScanSource(_) => {}
+                            }
+                        }
+
+
+
                     if table.is_source_of_view() {
                         continue;
                     }
@@ -180,7 +271,7 @@ impl AccessChecker for PrivilegeAccess {
                         vec![UserPrivilegeType::Select],
                         true,
                     )
-                    .await?
+                        .await?
                 }
             }
             Plan::ExplainAnalyze { plan } | Plan::Explain { plan, .. } => {
@@ -194,7 +285,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Select],
                     true,
                 )
-                .await?
+                    .await?
             }
             Plan::CreateUDF(_) | Plan::CreateDatabase(_) | Plan::CreateIndex(_) => {
                 self.validate_access(&GrantObject::Global, vec![UserPrivilegeType::Create], true)
@@ -234,7 +325,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Create],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             Plan::AlterVirtualColumn(plan) => {
                 self.validate_access(
@@ -246,7 +337,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             Plan::DropVirtualColumn(plan) => {
                 self.validate_access(
@@ -258,7 +349,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Drop],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             Plan::RefreshVirtualColumn(plan) => {
                 self.validate_access(
@@ -270,7 +361,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Super],
                     false,
                 )
-                .await?;
+                    .await?;
             }
 
             // Table.
@@ -284,7 +375,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Select],
                     true,
                 )
-                .await?
+                    .await?
             }
             Plan::DescribeTable(plan) => {
                 self.validate_access(
@@ -296,15 +387,16 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Select],
                     true,
                 )
-                .await?
+                    .await?
             }
             Plan::CreateTable(plan) => {
+                // TODO(TCeason): as_select need check privilege.
                 self.validate_access(
                     &GrantObject::Database(plan.catalog.clone(), plan.database.clone()),
                     vec![UserPrivilegeType::Create],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::DropTable(plan) => {
                 self.validate_access(
@@ -312,7 +404,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Drop],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::UndropTable(plan) => {
                 self.validate_access(
@@ -320,7 +412,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Drop],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::RenameTable(plan) => {
                 // You must have ALTER and DROP privileges for the original table,
@@ -334,7 +426,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter, UserPrivilegeType::Drop],
                     true,
                 )
-                .await?;
+                    .await?;
                 // TODO(liyz): need only check the create privilege on the target database? the target
                 // table may still not existed yet.
                 self.validate_access(
@@ -346,7 +438,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Create, UserPrivilegeType::Insert],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             Plan::SetOptions(plan) => {
                 self.validate_access(
@@ -358,7 +450,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::AddTableColumn(plan) => {
                 self.validate_access(
@@ -370,7 +462,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::RenameTableColumn(plan) => {
                 self.validate_access(
@@ -382,7 +474,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::ModifyTableColumn(plan) => {
                 self.validate_access(
@@ -394,7 +486,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::DropTableColumn(plan) => {
                 self.validate_access(
@@ -406,7 +498,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::AlterTableClusterKey(plan) => {
                 self.validate_access(
@@ -418,7 +510,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::DropTableClusterKey(plan) => {
                 self.validate_access(
@@ -430,9 +522,13 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Drop],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::ReclusterTable(plan) => {
+                if let Some(scalar) = &plan.push_downs {
+                    let udf = get_udf_names(scalar)?;
+                    self.check_udf_priv(udf).await?;
+                }
                 self.validate_access(
                     &GrantObject::Table(
                         plan.catalog.clone(),
@@ -442,7 +538,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::TruncateTable(plan) => {
                 self.validate_access(
@@ -454,7 +550,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Delete],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::OptimizeTable(plan) => {
                 self.validate_access(
@@ -466,7 +562,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Super],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::VacuumTable(plan) => {
                 self.validate_access(
@@ -478,7 +574,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Super],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::VacuumDropTable(plan) => {
                 self.validate_access(
@@ -486,7 +582,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Super],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::AnalyzeTable(plan) => {
                 self.validate_access(
@@ -498,10 +594,11 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Super],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             // Others.
             Plan::Insert(plan) => {
+                //TODO(TCeason): source need to check privileges.
                 self.validate_access(
                     &GrantObject::Table(
                         plan.catalog.clone(),
@@ -511,9 +608,10 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Insert],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::Replace(plan) => {
+                //TODO(TCeason): source and delete_when need to check privileges.
                 self.validate_access(
                     &GrantObject::Table(
                         plan.catalog.clone(),
@@ -523,9 +621,52 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Insert, UserPrivilegeType::Delete],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::MergeInto(plan) => {
+                if enable_stage_udf_priv_check {
+                    let s_expr = &plan.input;
+                    match s_expr.get_udfs() {
+                        Ok(udfs) => {
+                            if !udfs.is_empty() {
+                                for udf in udfs {
+                                    self.validate_access(
+                                        &GrantObject::UDF(udf.clone()),
+                                        vec![UserPrivilegeType::Usage],
+                                        false,
+                                    ).await?
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            return Err(err.add_message("get udf error on validating access"));
+                        }
+                    }
+                    let matched_evaluators = &plan.matched_evaluators;
+                    let unmatched_evaluators = &plan.unmatched_evaluators;
+                    for matched_evaluator in matched_evaluators {
+                        if let Some(condition) = &matched_evaluator.condition {
+                            let udf = get_udf_names(condition)?;
+                            self.check_udf_priv(udf).await?;
+                        }
+                        if let Some(updates) = &matched_evaluator.update {
+                            for scalar in updates.values() {
+                                let udf = get_udf_names(scalar)?;
+                                self.check_udf_priv(udf).await?;
+                            }
+                        }
+                    }
+                    for unmatched_evaluator in unmatched_evaluators {
+                        if let Some(condition) = &unmatched_evaluator.condition {
+                            let udf = get_udf_names(condition)?;
+                            self.check_udf_priv(udf).await?;
+                        }
+                        for value in &unmatched_evaluator.values {
+                            let udf = get_udf_names(value)?;
+                            self.check_udf_priv(udf).await?;
+                        }
+                    }
+                }
                 self.validate_access(
                     &GrantObject::Table(
                         plan.catalog.clone(),
@@ -535,9 +676,33 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Insert, UserPrivilegeType::Delete],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::Delete(plan) => {
+                if enable_stage_udf_priv_check {
+                    if let Some(selection) = &plan.selection {
+                        let udf = get_udf_names(selection)?;
+                        self.check_udf_priv(udf).await?;
+                    }
+                    for subquery in &plan.subquery_desc {
+                        match subquery.input_expr.get_udfs() {
+                            Ok(udfs) => {
+                                if !udfs.is_empty() {
+                                    for udf in udfs {
+                                        self.validate_access(
+                                            &GrantObject::UDF(udf.clone()),
+                                            vec![UserPrivilegeType::Usage],
+                                            false,
+                                        ).await?
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                return Err(err.add_message("get udf error on validating access"));
+                            }
+                        }
+                    }
+                }
                 self.validate_access(
                     &GrantObject::Table(
                         plan.catalog_name.clone(),
@@ -547,9 +712,35 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Delete],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::Update(plan) => {
+                for scalar in plan.update_list.values() {
+                    let udf = get_udf_names(scalar)?;
+                    self.check_udf_priv(udf).await?;
+                }
+                if let Some(selection) = &plan.selection {
+                    let udf = get_udf_names(selection)?;
+                    self.check_udf_priv(udf).await?;
+                }
+                for subquery in &plan.subquery_desc {
+                    match subquery.input_expr.get_udfs() {
+                        Ok(udfs) => {
+                            if !udfs.is_empty() {
+                                for udf in udfs {
+                                    self.validate_access(
+                                        &GrantObject::UDF(udf.clone()),
+                                        vec![UserPrivilegeType::Usage],
+                                        false,
+                                    ).await?
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            return Err(err.add_message("get udf error on validating access"));
+                        }
+                    }
+                }
                 self.validate_access(
                     &GrantObject::Table(
                         plan.catalog.clone(),
@@ -559,7 +750,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Update],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::CreateView(plan) => {
                 self.validate_access(
@@ -567,7 +758,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Create],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::AlterView(plan) => {
                 self.validate_access(
@@ -575,7 +766,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Alter],
                     true,
                 )
-                .await?;
+                    .await?;
             }
             Plan::DropView(plan) => {
                 self.validate_access(
@@ -583,7 +774,23 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::Drop],
                     true,
                 )
-                .await?;
+                    .await?;
+            }
+            Plan::CreateStream(plan) => {
+                self.validate_access(
+                    &GrantObject::Database(plan.catalog.clone(), plan.database.clone()),
+                    vec![UserPrivilegeType::Create],
+                    true,
+                )
+                    .await?;
+            }
+            Plan::DropStream(plan) => {
+                self.validate_access(
+                    &GrantObject::Database(plan.catalog.clone(), plan.database.clone()),
+                    vec![UserPrivilegeType::Drop],
+                    true,
+                )
+                    .await?;
             }
             Plan::CreateUser(_) => {
                 self.validate_access(
@@ -591,7 +798,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::CreateUser],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             Plan::DropUser(_) => {
                 self.validate_access(
@@ -599,7 +806,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::DropUser],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             Plan::CreateRole(_) => {
                 self.validate_access(
@@ -607,7 +814,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::CreateRole],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             Plan::DropRole(_) => {
                 self.validate_access(
@@ -615,7 +822,7 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::DropRole],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             Plan::GrantShareObject(_)
             | Plan::RevokeShareObject(_)
@@ -643,14 +850,20 @@ impl AccessChecker for PrivilegeAccess {
                     .await?;
             }
             Plan::CopyIntoTable(plan) => {
-                let stage_name = &plan.stage_table_info.stage_info.stage_name;
-                self
-                    .validate_access(
-                        &GrantObject::Stage(stage_name.clone()),
-                        vec![UserPrivilegeType::Read],
-                        false,
-                    )
-                    .await?;
+                // TODO(TCeason): need to check plan.query privileges.
+
+                    if enable_stage_udf_priv_check && !plan.stage_table_info.stage_info.is_from_uri {
+                        let stage_name = &plan.stage_table_info.stage_info.stage_name;
+                        self
+                            .validate_access(
+                                &GrantObject::Stage(stage_name.clone()),
+                                vec![UserPrivilegeType::Read],
+                                false,
+                            )
+                            .await?;
+                    }
+
+
                 self
                     .validate_access(
                         &GrantObject::Table(
@@ -664,18 +877,35 @@ impl AccessChecker for PrivilegeAccess {
                     .await?;
             }
             Plan::CopyIntoLocation(plan) => {
-                let stage_name = &plan.stage.stage_name;
-                self
-                    .validate_access(
-                        &GrantObject::Stage(stage_name.clone()),
-                        vec![UserPrivilegeType::Write],
-                        false,
-                    )
-                    .await?;
-                let from = plan.from.clone();
-                return self.check(ctx, &from).await
-            }
 
+                    if enable_stage_udf_priv_check && !plan.stage.is_from_uri {
+                        let stage_name = &plan.stage.stage_name;
+                        self
+                            .validate_access(
+                                &GrantObject::Stage(stage_name.clone()),
+                                vec![UserPrivilegeType::Write],
+                                false,
+                            )
+                            .await?;
+                    }
+
+                let from = plan.from.clone();
+                return self.check(ctx, &from).await;
+            }
+            Plan::RemoveStage(plan) => {
+
+                    if enable_stage_udf_priv_check && !plan.stage.is_from_uri {
+                        let stage_name = &plan.stage.stage_name;
+                        self
+                            .validate_access(
+                                &GrantObject::Stage(stage_name.clone()),
+                                vec![UserPrivilegeType::Write],
+                                false,
+                            )
+                            .await?;
+                    }
+
+            }
             Plan::CreateShareEndpoint(_)
             | Plan::ShowShareEndpoint(_)
             | Plan::DropShareEndpoint(_)
@@ -688,7 +918,6 @@ impl AccessChecker for PrivilegeAccess {
             | Plan::DropCatalog(_)
             | Plan::CreateStage(_)
             | Plan::DropStage(_)
-            | Plan::RemoveStage(_)
             | Plan::CreateFileFormat(_)
             | Plan::DropFileFormat(_)
             | Plan::ShowFileFormats(_)
@@ -697,6 +926,10 @@ impl AccessChecker for PrivilegeAccess {
             | Plan::DropNetworkPolicy(_)
             | Plan::DescNetworkPolicy(_)
             | Plan::ShowNetworkPolicies(_)
+            | Plan::CreateConnection(_)
+            | Plan::ShowConnections(_)
+            | Plan::DescConnection(_)
+            | Plan::DropConnection(_)
             | Plan::CreateTask(_)   // TODO: need to build ownership info for task
             | Plan::ShowTasks(_)    // TODO: need to build ownership info for task
             | Plan::DescribeTask(_) // TODO: need to build ownership info for task
@@ -712,35 +945,39 @@ impl AccessChecker for PrivilegeAccess {
                     vec![UserPrivilegeType::CreateDataMask],
                     false,
                 )
-                .await?;
+                    .await?;
             }
             // Note: No need to check privileges
             // SET ROLE & SHOW ROLES is a session-local statement (have same semantic with the SET ROLE in postgres), no need to check privileges
             Plan::SetRole(_) => {}
+            Plan::SetSecondaryRoles(_) => {}
             Plan::ShowRoles(_) => {}
             Plan::Presign(plan) => {
-                let stage_name = &plan.stage.stage_name;
-                let action = &plan.action;
-                match action {
-                    PresignAction::Upload => {
-                        self
-                            .validate_access(
-                                &GrantObject::Stage(stage_name.clone()),
-                                vec![UserPrivilegeType::Write],
-                                false,
-                            )
-                            .await?
+                    if enable_stage_udf_priv_check && !plan.stage.is_from_uri {
+                        let stage_name = &plan.stage.stage_name;
+                        let action = &plan.action;
+                        match action {
+                            PresignAction::Upload => {
+                                self
+                                    .validate_access(
+                                        &GrantObject::Stage(stage_name.clone()),
+                                        vec![UserPrivilegeType::Write],
+                                        false,
+                                    )
+                                    .await?
+                            }
+                            PresignAction::Download => {
+                                self
+                                    .validate_access(
+                                        &GrantObject::Stage(stage_name.clone()),
+                                        vec![UserPrivilegeType::Read],
+                                        false,
+                                    )
+                                    .await?
+                            }
+                        }
                     }
-                    PresignAction::Download => {
-                        self
-                            .validate_access(
-                                &GrantObject::Stage(stage_name.clone()),
-                                vec![UserPrivilegeType::Read],
-                                false,
-                            )
-                            .await?
-                    }
-                }
+
             }
             Plan::ExplainAst { .. } => {}
             Plan::ExplainSyntax { .. } => {}

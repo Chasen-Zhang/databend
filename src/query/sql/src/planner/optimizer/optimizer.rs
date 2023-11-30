@@ -127,6 +127,23 @@ pub fn optimize(
             Ok(Plan::CopyIntoTable(plan))
         }
         Plan::MergeInto(plan) => {
+            // optimize source :fix issue #13733
+            // reason: if there is subquery,windowfunc exprs etc. see
+            // src/planner/semantic/lowering.rs `as_raw_expr()`, we will
+            // get dummy index. So we need to use optimizer to solve this.
+            let right_source = optimize_query(
+                ctx.clone(),
+                opt_ctx.clone(),
+                plan.meta_data.clone(),
+                plan.input.child(1)?.clone(),
+            )?;
+            // replace right source
+            let mut join_sexpr = plan.input.clone();
+            join_sexpr = Box::new(join_sexpr.replace_children(vec![
+                Arc::new(join_sexpr.child(0)?.clone()),
+                Arc::new(right_source),
+            ]));
+
             // try to optimize distributed join
             if opt_ctx.config.enable_distributed_optimization
                 && ctx.get_settings().get_enable_distributed_merge_into()?
@@ -134,7 +151,7 @@ pub fn optimize(
                 // Todo(JackTan25): We should use optimizer to make a decision to use
                 // left join and right join.
                 // input is a Join_SExpr
-                let merge_into_join_sexpr = optimize_distributed_query(ctx.clone(), &plan.input)?;
+                let merge_into_join_sexpr = optimize_distributed_query(ctx.clone(), &join_sexpr)?;
 
                 let merge_source_optimizer = MergeSourceOptimizer::create();
                 let optimized_distributed_merge_into_join_sexpr =
@@ -144,7 +161,10 @@ pub fn optimize(
                     ..*plan
                 })))
             } else {
-                Ok(Plan::MergeInto(plan))
+                Ok(Plan::MergeInto(Box::new(MergeInto {
+                    input: join_sexpr,
+                    ..*plan
+                })))
             }
         }
         // Passthrough statements.
@@ -164,7 +184,9 @@ pub fn optimize_query(
     let mut result = heuristic.pre_optimize(s_expr)?;
     result = heuristic.optimize_expression(&result, &DEFAULT_REWRITE_RULES)?;
     let mut dphyp_optimized = false;
-    if ctx.get_settings().get_enable_dphyp()? && !ctx.get_settings().get_disable_join_reorder()? {
+    if ctx.get_settings().get_enable_dphyp()?
+        && unsafe { !ctx.get_settings().get_disable_join_reorder()? }
+    {
         let (dp_res, optimized) =
             DPhpy::new(ctx.clone(), metadata.clone()).optimize(Arc::new(result.clone()))?;
         if optimized {
@@ -188,7 +210,7 @@ pub fn optimize_query(
     if enable_distributed_query {
         result = optimize_distributed_query(ctx.clone(), &result)?;
     }
-    if ctx.get_settings().get_disable_join_reorder()? {
+    if unsafe { ctx.get_settings().get_disable_join_reorder()? } {
         return heuristic.optimize_expression(&result, &[RuleID::EliminateEvalScalar]);
     }
     heuristic.optimize_expression(&result, &RESIDUAL_RULES)

@@ -21,37 +21,37 @@ use common_profile::SharedProcessorProfiles;
 use itertools::Itertools;
 
 use crate::executor::explain::PlanStatsInfo;
-use crate::executor::physical_plans::common::AggregateFunctionDesc;
-use crate::executor::physical_plans::common::FragmentKind;
-use crate::executor::physical_plans::physical_aggregate_expand::AggregateExpand;
-use crate::executor::physical_plans::physical_aggregate_final::AggregateFinal;
-use crate::executor::physical_plans::physical_aggregate_partial::AggregatePartial;
-use crate::executor::physical_plans::physical_commit_sink::CommitSink;
-use crate::executor::physical_plans::physical_constant_table_scan::ConstantTableScan;
-use crate::executor::physical_plans::physical_copy_into::CopyIntoTable;
-use crate::executor::physical_plans::physical_cte_scan::CteScan;
-use crate::executor::physical_plans::physical_distributed_insert_select::DistributedInsertSelect;
-use crate::executor::physical_plans::physical_eval_scalar::EvalScalar;
-use crate::executor::physical_plans::physical_exchange::Exchange;
-use crate::executor::physical_plans::physical_exchange_sink::ExchangeSink;
-use crate::executor::physical_plans::physical_exchange_source::ExchangeSource;
-use crate::executor::physical_plans::physical_filter::Filter;
-use crate::executor::physical_plans::physical_hash_join::HashJoin;
-use crate::executor::physical_plans::physical_lambda::Lambda;
-use crate::executor::physical_plans::physical_limit::Limit;
-use crate::executor::physical_plans::physical_materialized_cte::MaterializedCte;
-use crate::executor::physical_plans::physical_project::Project;
-use crate::executor::physical_plans::physical_project_set::ProjectSet;
-use crate::executor::physical_plans::physical_range_join::RangeJoin;
-use crate::executor::physical_plans::physical_range_join::RangeJoinType;
-use crate::executor::physical_plans::physical_recluster_sink::ReclusterSink;
-use crate::executor::physical_plans::physical_row_fetch::RowFetch;
-use crate::executor::physical_plans::physical_runtime_filter_source::RuntimeFilterSource;
-use crate::executor::physical_plans::physical_sort::Sort;
-use crate::executor::physical_plans::physical_table_scan::TableScan;
-use crate::executor::physical_plans::physical_union_all::UnionAll;
-use crate::executor::physical_plans::physical_window::Window;
-use crate::executor::physical_plans::physical_window::WindowFunction;
+use crate::executor::physical_plans::AggregateExpand;
+use crate::executor::physical_plans::AggregateFinal;
+use crate::executor::physical_plans::AggregateFunctionDesc;
+use crate::executor::physical_plans::AggregatePartial;
+use crate::executor::physical_plans::CommitSink;
+use crate::executor::physical_plans::ConstantTableScan;
+use crate::executor::physical_plans::CopyIntoTable;
+use crate::executor::physical_plans::CteScan;
+use crate::executor::physical_plans::DistributedInsertSelect;
+use crate::executor::physical_plans::EvalScalar;
+use crate::executor::physical_plans::Exchange;
+use crate::executor::physical_plans::ExchangeSink;
+use crate::executor::physical_plans::ExchangeSource;
+use crate::executor::physical_plans::Filter;
+use crate::executor::physical_plans::FragmentKind;
+use crate::executor::physical_plans::HashJoin;
+use crate::executor::physical_plans::Limit;
+use crate::executor::physical_plans::MaterializedCte;
+use crate::executor::physical_plans::Project;
+use crate::executor::physical_plans::ProjectSet;
+use crate::executor::physical_plans::RangeJoin;
+use crate::executor::physical_plans::RangeJoinType;
+use crate::executor::physical_plans::ReclusterSink;
+use crate::executor::physical_plans::RowFetch;
+use crate::executor::physical_plans::RuntimeFilterSource;
+use crate::executor::physical_plans::Sort;
+use crate::executor::physical_plans::TableScan;
+use crate::executor::physical_plans::Udf;
+use crate::executor::physical_plans::UnionAll;
+use crate::executor::physical_plans::Window;
+use crate::executor::physical_plans::WindowFunction;
 use crate::executor::PhysicalPlan;
 use crate::planner::Metadata;
 use crate::planner::MetadataRef;
@@ -198,10 +198,11 @@ fn to_format_tree(
         PhysicalPlan::DeleteSource(_) => Ok(FormatTreeNode::new("DeleteSource".to_string())),
         PhysicalPlan::ReclusterSource(_) => Ok(FormatTreeNode::new("ReclusterSource".to_string())),
         PhysicalPlan::ReclusterSink(plan) => recluster_sink_to_format_tree(plan, metadata, profs),
+        PhysicalPlan::UpdateSource(_) => Ok(FormatTreeNode::new("UpdateSource".to_string())),
         PhysicalPlan::CompactSource(_) => Ok(FormatTreeNode::new("CompactSource".to_string())),
         PhysicalPlan::CommitSink(plan) => commit_sink_to_format_tree(plan, metadata, profs),
         PhysicalPlan::ProjectSet(plan) => project_set_to_format_tree(plan, metadata, profs),
-        PhysicalPlan::Lambda(plan) => lambda_to_format_tree(plan, metadata, profs),
+        PhysicalPlan::Udf(plan) => udf_to_format_tree(plan, metadata, profs),
         PhysicalPlan::RuntimeFilterSource(plan) => {
             runtime_filter_source_to_format_tree(plan, metadata, profs)
         }
@@ -1125,8 +1126,8 @@ fn project_set_to_format_tree(
     ))
 }
 
-fn lambda_to_format_tree(
-    plan: &Lambda,
+fn udf_to_format_tree(
+    plan: &Udf,
     metadata: &Metadata,
     prof_span_set: &SharedProcessorProfiles,
 ) -> Result<FormatTreeNode<String>> {
@@ -1143,17 +1144,12 @@ fn lambda_to_format_tree(
     append_profile_info(&mut children, prof_span_set, plan.plan_id);
 
     children.extend(vec![FormatTreeNode::new(format!(
-        "lambda functions: {}",
-        plan.lambda_funcs
+        "udf functions: {}",
+        plan.udf_funcs
             .iter()
             .map(|func| {
                 let arg_exprs = func.arg_exprs.join(", ");
-                let params = func.params.join(", ");
-                let lambda_expr = func.lambda_expr.as_expr(&BUILTIN_FUNCTIONS).sql_display();
-                format!(
-                    "{}({}, {} -> {})",
-                    func.func_name, arg_exprs, params, lambda_expr
-                )
+                format!("{}({})", func.func_name, arg_exprs)
             })
             .collect::<Vec<_>>()
             .join(", ")
@@ -1161,10 +1157,7 @@ fn lambda_to_format_tree(
 
     children.extend(vec![to_format_tree(&plan.input, metadata, prof_span_set)?]);
 
-    Ok(FormatTreeNode::with_children(
-        "Lambda".to_string(),
-        children,
-    ))
+    Ok(FormatTreeNode::with_children("Udf".to_string(), children))
 }
 
 fn runtime_filter_source_to_format_tree(

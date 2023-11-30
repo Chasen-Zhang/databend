@@ -23,13 +23,13 @@ use common_catalog::table::Table;
 use common_catalog::table_args::TableArgs;
 use common_catalog::table_context::TableContext;
 use common_catalog::table_function::TableFunction;
+use common_exception::ErrorCode;
 use common_exception::Result;
 use common_expression::types::NumberDataType;
 use common_expression::types::StringType;
 use common_expression::types::UInt64Type;
 use common_expression::DataBlock;
 use common_expression::FromData;
-use common_expression::FromOptData;
 use common_expression::TableDataType;
 use common_expression::TableField;
 use common_expression::TableSchema;
@@ -37,8 +37,8 @@ use common_expression::TableSchemaRefExt;
 use common_meta_app::schema::TableIdent;
 use common_meta_app::schema::TableInfo;
 use common_meta_app::schema::TableMeta;
-use common_pipeline_core::processors::port::OutputPort;
-use common_pipeline_core::processors::processor::ProcessorPtr;
+use common_pipeline_core::processors::OutputPort;
+use common_pipeline_core::processors::ProcessorPtr;
 use common_pipeline_core::Pipeline;
 use common_pipeline_sources::AsyncSource;
 use common_pipeline_sources::AsyncSourcer;
@@ -185,6 +185,20 @@ impl AsyncSource for ListStagesSource {
 
         let (stage_info, path) =
             resolve_stage_location(&self.ctx, &self.args_parsed.location).await?;
+        let enable_stage_udf_priv_check =
+            self.ctx.get_settings().get_enable_stage_udf_priv_check()?;
+        if enable_stage_udf_priv_check {
+            let visibility_checker = self.ctx.get_visibility_checker().await?;
+            if !stage_info.is_from_uri
+                && !visibility_checker.check_stage_read_visibility(&stage_info.stage_name)
+            {
+                return Err(ErrorCode::PermissionDenied(format!(
+                    "Permission denied, privilege READ is required on stage {} for user {}",
+                    stage_info.stage_name.clone(),
+                    &self.ctx.get_current_user()?.identity(),
+                )));
+            }
+        }
         let op = StageTable::get_op(&stage_info)?;
 
         let files_info = StageFilesInfo {

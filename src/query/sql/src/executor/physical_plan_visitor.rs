@@ -14,46 +14,47 @@
 
 use common_exception::Result;
 
-use super::physical_plans::physical_merge_into_add_row_number::MergeIntoAddRowNumber;
-use super::MergeIntoAppendNotMatched;
-use crate::executor::physical_plans::physical_aggregate_expand::AggregateExpand;
-use crate::executor::physical_plans::physical_aggregate_final::AggregateFinal;
-use crate::executor::physical_plans::physical_aggregate_partial::AggregatePartial;
-use crate::executor::physical_plans::physical_commit_sink::CommitSink;
-use crate::executor::physical_plans::physical_compact_source::CompactSource;
-use crate::executor::physical_plans::physical_constant_table_scan::ConstantTableScan;
-use crate::executor::physical_plans::physical_copy_into::CopyIntoTable;
-use crate::executor::physical_plans::physical_copy_into::CopyIntoTableSource;
-use crate::executor::physical_plans::physical_copy_into::QuerySource;
-use crate::executor::physical_plans::physical_cte_scan::CteScan;
-use crate::executor::physical_plans::physical_delete_source::DeleteSource;
-use crate::executor::physical_plans::physical_distributed_insert_select::DistributedInsertSelect;
-use crate::executor::physical_plans::physical_eval_scalar::EvalScalar;
-use crate::executor::physical_plans::physical_exchange::Exchange;
-use crate::executor::physical_plans::physical_exchange_sink::ExchangeSink;
-use crate::executor::physical_plans::physical_exchange_source::ExchangeSource;
-use crate::executor::physical_plans::physical_filter::Filter;
-use crate::executor::physical_plans::physical_hash_join::HashJoin;
-use crate::executor::physical_plans::physical_lambda::Lambda;
-use crate::executor::physical_plans::physical_limit::Limit;
-use crate::executor::physical_plans::physical_materialized_cte::MaterializedCte;
-use crate::executor::physical_plans::physical_merge_into::MergeInto;
-use crate::executor::physical_plans::physical_merge_into::MergeIntoSource;
-use crate::executor::physical_plans::physical_project::Project;
-use crate::executor::physical_plans::physical_project_set::ProjectSet;
-use crate::executor::physical_plans::physical_range_join::RangeJoin;
-use crate::executor::physical_plans::physical_recluster_sink::ReclusterSink;
-use crate::executor::physical_plans::physical_recluster_source::ReclusterSource;
-use crate::executor::physical_plans::physical_replace_async_source::ReplaceAsyncSourcer;
-use crate::executor::physical_plans::physical_replace_deduplicate::ReplaceDeduplicate;
-use crate::executor::physical_plans::physical_replace_into::ReplaceInto;
-use crate::executor::physical_plans::physical_row_fetch::RowFetch;
-use crate::executor::physical_plans::physical_runtime_filter_source::RuntimeFilterSource;
-use crate::executor::physical_plans::physical_sort::Sort;
-use crate::executor::physical_plans::physical_table_scan::TableScan;
-use crate::executor::physical_plans::physical_union_all::UnionAll;
-use crate::executor::physical_plans::physical_window::Window;
-use crate::executor::PhysicalPlan;
+use crate::executor::physical_plan::PhysicalPlan;
+use crate::executor::physical_plans::AggregateExpand;
+use crate::executor::physical_plans::AggregateFinal;
+use crate::executor::physical_plans::AggregatePartial;
+use crate::executor::physical_plans::CommitSink;
+use crate::executor::physical_plans::CompactSource;
+use crate::executor::physical_plans::ConstantTableScan;
+use crate::executor::physical_plans::CopyIntoTable;
+use crate::executor::physical_plans::CopyIntoTableSource;
+use crate::executor::physical_plans::CteScan;
+use crate::executor::physical_plans::DeleteSource;
+use crate::executor::physical_plans::DistributedInsertSelect;
+use crate::executor::physical_plans::EvalScalar;
+use crate::executor::physical_plans::Exchange;
+use crate::executor::physical_plans::ExchangeSink;
+use crate::executor::physical_plans::ExchangeSource;
+use crate::executor::physical_plans::Filter;
+use crate::executor::physical_plans::HashJoin;
+use crate::executor::physical_plans::Limit;
+use crate::executor::physical_plans::MaterializedCte;
+use crate::executor::physical_plans::MergeInto;
+use crate::executor::physical_plans::MergeIntoAddRowNumber;
+use crate::executor::physical_plans::MergeIntoAppendNotMatched;
+use crate::executor::physical_plans::MergeIntoSource;
+use crate::executor::physical_plans::Project;
+use crate::executor::physical_plans::ProjectSet;
+use crate::executor::physical_plans::QuerySource;
+use crate::executor::physical_plans::RangeJoin;
+use crate::executor::physical_plans::ReclusterSink;
+use crate::executor::physical_plans::ReclusterSource;
+use crate::executor::physical_plans::ReplaceAsyncSourcer;
+use crate::executor::physical_plans::ReplaceDeduplicate;
+use crate::executor::physical_plans::ReplaceInto;
+use crate::executor::physical_plans::RowFetch;
+use crate::executor::physical_plans::RuntimeFilterSource;
+use crate::executor::physical_plans::Sort;
+use crate::executor::physical_plans::TableScan;
+use crate::executor::physical_plans::Udf;
+use crate::executor::physical_plans::UnionAll;
+use crate::executor::physical_plans::UpdateSource;
+use crate::executor::physical_plans::Window;
 
 pub trait PhysicalPlanReplacer {
     fn replace(&mut self, plan: &PhysicalPlan) -> Result<PhysicalPlan> {
@@ -77,7 +78,6 @@ pub trait PhysicalPlanReplacer {
             PhysicalPlan::UnionAll(plan) => self.replace_union(plan),
             PhysicalPlan::DistributedInsertSelect(plan) => self.replace_insert_select(plan),
             PhysicalPlan::ProjectSet(plan) => self.replace_project_set(plan),
-            PhysicalPlan::Lambda(plan) => self.replace_lambda(plan),
             PhysicalPlan::RuntimeFilterSource(plan) => self.replace_runtime_filter_source(plan),
             PhysicalPlan::CompactSource(plan) => self.replace_compact_source(plan),
             PhysicalPlan::DeleteSource(plan) => self.replace_delete_source(plan),
@@ -97,6 +97,8 @@ pub trait PhysicalPlanReplacer {
             PhysicalPlan::ConstantTableScan(plan) => self.replace_constant_table_scan(plan),
             PhysicalPlan::ReclusterSource(plan) => self.replace_recluster_source(plan),
             PhysicalPlan::ReclusterSink(plan) => self.replace_recluster_sink(plan),
+            PhysicalPlan::UpdateSource(plan) => self.replace_update_source(plan),
+            PhysicalPlan::Udf(plan) => self.replace_udf(plan),
         }
     }
 
@@ -396,6 +398,10 @@ pub trait PhysicalPlanReplacer {
         Ok(PhysicalPlan::DeleteSource(Box::new(plan.clone())))
     }
 
+    fn replace_update_source(&mut self, plan: &UpdateSource) -> Result<PhysicalPlan> {
+        Ok(PhysicalPlan::UpdateSource(Box::new(plan.clone())))
+    }
+
     fn replace_commit_sink(&mut self, plan: &CommitSink) -> Result<PhysicalPlan> {
         let input = self.replace(&plan.input)?;
         Ok(PhysicalPlan::CommitSink(Box::new(CommitSink {
@@ -476,16 +482,6 @@ pub trait PhysicalPlanReplacer {
         }))
     }
 
-    fn replace_lambda(&mut self, plan: &Lambda) -> Result<PhysicalPlan> {
-        let input = self.replace(&plan.input)?;
-        Ok(PhysicalPlan::Lambda(Lambda {
-            plan_id: plan.plan_id,
-            input: Box::new(input),
-            lambda_funcs: plan.lambda_funcs.clone(),
-            stat_info: plan.stat_info.clone(),
-        }))
-    }
-
     fn replace_runtime_filter_source(
         &mut self,
         plan: &RuntimeFilterSource,
@@ -498,6 +494,16 @@ pub trait PhysicalPlanReplacer {
             right_side: Box::new(right_side),
             left_runtime_filters: plan.left_runtime_filters.clone(),
             right_runtime_filters: plan.right_runtime_filters.clone(),
+        }))
+    }
+
+    fn replace_udf(&mut self, plan: &Udf) -> Result<PhysicalPlan> {
+        let input = self.replace(&plan.input)?;
+        Ok(PhysicalPlan::Udf(Udf {
+            plan_id: plan.plan_id,
+            input: Box::new(input),
+            udf_funcs: plan.udf_funcs.clone(),
+            stat_info: plan.stat_info.clone(),
         }))
     }
 }
@@ -519,7 +525,8 @@ impl PhysicalPlan {
                 | PhysicalPlan::ReclusterSource(_)
                 | PhysicalPlan::ExchangeSource(_)
                 | PhysicalPlan::CompactSource(_)
-                | PhysicalPlan::DeleteSource(_) => {}
+                | PhysicalPlan::DeleteSource(_)
+                | PhysicalPlan::UpdateSource(_) => {}
                 PhysicalPlan::Filter(plan) => {
                     Self::traverse(&plan.input, pre_visit, visit, post_visit);
                 }
@@ -570,9 +577,6 @@ impl PhysicalPlan {
                 PhysicalPlan::ProjectSet(plan) => {
                     Self::traverse(&plan.input, pre_visit, visit, post_visit)
                 }
-                PhysicalPlan::Lambda(plan) => {
-                    Self::traverse(&plan.input, pre_visit, visit, post_visit)
-                }
                 PhysicalPlan::CopyIntoTable(plan) => match &plan.source {
                     CopyIntoTableSource::Query(input) => {
                         Self::traverse(&input.plan, pre_visit, visit, post_visit);
@@ -614,6 +618,9 @@ impl PhysicalPlan {
                 PhysicalPlan::MaterializedCte(plan) => {
                     Self::traverse(&plan.left, pre_visit, visit, post_visit);
                     Self::traverse(&plan.right, pre_visit, visit, post_visit);
+                }
+                PhysicalPlan::Udf(plan) => {
+                    Self::traverse(&plan.input, pre_visit, visit, post_visit);
                 }
             }
             post_visit(plan);

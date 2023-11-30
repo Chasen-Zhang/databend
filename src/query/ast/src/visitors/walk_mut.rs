@@ -206,9 +206,9 @@ pub fn walk_select_target_mut<V: VisitorMut>(visitor: &mut V, target: &mut Selec
                 visitor.visit_identifier(alias);
             }
         }
-        SelectTarget::QualifiedName {
+        SelectTarget::StarColumns {
             qualified: names,
-            exclude,
+            column_filter,
         } => {
             for indirection in names {
                 match indirection {
@@ -218,9 +218,17 @@ pub fn walk_select_target_mut<V: VisitorMut>(visitor: &mut V, target: &mut Selec
                     Indirection::Star(_) => {}
                 }
             }
-            if let Some(cols) = exclude {
-                for ident in cols {
-                    visitor.visit_column_id(ident);
+
+            if let Some(col_filter) = column_filter {
+                match col_filter {
+                    ColumnFilter::Excludes(excludes) => {
+                        for ident in excludes.iter_mut() {
+                            visitor.visit_identifier(ident);
+                        }
+                    }
+                    ColumnFilter::Lambda(lambda) => {
+                        visitor.visit_expr(lambda.expr.as_mut());
+                    }
                 }
             }
         }
@@ -291,6 +299,18 @@ pub fn walk_time_travel_point_mut<V: VisitorMut>(visitor: &mut V, time: &mut Tim
     }
 }
 
+pub fn walk_stream_point_mut<V: VisitorMut>(visitor: &mut V, stream: &mut StreamPoint) {
+    match stream {
+        StreamPoint::AtStream { database, name } => {
+            if let Some(database) = database {
+                visitor.visit_identifier(database);
+            }
+
+            visitor.visit_identifier(name);
+        }
+    }
+}
+
 pub fn walk_join_condition_mut<V: VisitorMut>(visitor: &mut V, join_cond: &mut JoinCondition) {
     match join_cond {
         JoinCondition::On(expr) => visitor.visit_expr(expr),
@@ -348,6 +368,7 @@ pub fn walk_statement_mut<V: VisitorMut>(visitor: &mut V, statement: &mut Statem
             is_default,
             role_name,
         } => visitor.visit_set_role(*is_default, role_name),
+        Statement::SetSecondaryRoles { option } => visitor.visit_set_secondary_roles(option),
         Statement::ShowCatalogs(stmt) => visitor.visit_show_catalogs(stmt),
         Statement::ShowCreateCatalog(stmt) => visitor.visit_show_create_catalog(stmt),
         Statement::CreateCatalog(stmt) => visitor.visit_create_catalog(stmt),
@@ -379,6 +400,10 @@ pub fn walk_statement_mut<V: VisitorMut>(visitor: &mut V, statement: &mut Statem
         Statement::CreateView(stmt) => visitor.visit_create_view(stmt),
         Statement::AlterView(stmt) => visitor.visit_alter_view(stmt),
         Statement::DropView(stmt) => visitor.visit_drop_view(stmt),
+        Statement::CreateStream(stmt) => visitor.visit_create_stream(stmt),
+        Statement::DropStream(stmt) => visitor.visit_drop_stream(stmt),
+        Statement::ShowStreams(stmt) => visitor.visit_show_streams(stmt),
+        Statement::DescribeStream(stmt) => visitor.visit_describe_stream(stmt),
         Statement::CreateIndex(stmt) => visitor.visit_create_index(stmt),
         Statement::DropIndex(stmt) => visitor.visit_drop_index(stmt),
         Statement::RefreshIndex(stmt) => visitor.visit_refresh_index(stmt),
@@ -460,5 +485,15 @@ pub fn walk_statement_mut<V: VisitorMut>(visitor: &mut V, statement: &mut Statem
         Statement::AlterTask(stmt) => visitor.visit_alter_task(stmt),
         Statement::ShowTasks(stmt) => visitor.visit_show_tasks(stmt),
         Statement::DescribeTask(stmt) => visitor.visit_describe_task(stmt),
+
+        Statement::CreateConnection(stmt) => visitor.visit_create_connection(stmt),
+        Statement::DropConnection(stmt) => visitor.visit_drop_connection(stmt),
+        Statement::DescribeConnection(stmt) => visitor.visit_describe_connection(stmt),
+        Statement::ShowConnections(stmt) => visitor.visit_show_connections(stmt),
+
+        Statement::CreatePipe(_) => todo!(),
+        Statement::AlterPipe(_) => todo!(),
+        Statement::DropPipe(_) => todo!(),
+        Statement::DescribePipe(_) => todo!(),
     }
 }

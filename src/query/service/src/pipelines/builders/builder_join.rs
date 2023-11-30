@@ -16,38 +16,38 @@ use std::sync::Arc;
 
 use common_base::base::tokio::sync::Barrier;
 use common_exception::Result;
-use common_pipeline_core::pipe::Pipe;
-use common_pipeline_core::pipe::PipeItem;
-use common_pipeline_core::processors::port::InputPort;
-use common_pipeline_core::processors::processor::ProcessorPtr;
+use common_pipeline_core::processors::InputPort;
+use common_pipeline_core::processors::ProcessorPtr;
+use common_pipeline_core::Pipe;
+use common_pipeline_core::PipeItem;
 use common_pipeline_sinks::Sinker;
-use common_pipeline_transforms::processors::profile_wrapper::ProcessorProfileWrapper;
-use common_pipeline_transforms::processors::profile_wrapper::ProfileStub;
-use common_pipeline_transforms::processors::transforms::Transformer;
-use common_sql::executor::HashJoin;
-use common_sql::executor::MaterializedCte;
+use common_pipeline_transforms::processors::ProcessorProfileWrapper;
+use common_pipeline_transforms::processors::ProfileStub;
+use common_pipeline_transforms::processors::Transformer;
+use common_sql::executor::physical_plans::HashJoin;
+use common_sql::executor::physical_plans::MaterializedCte;
+use common_sql::executor::physical_plans::RangeJoin;
+use common_sql::executor::physical_plans::RuntimeFilterSource;
 use common_sql::executor::PhysicalPlan;
-use common_sql::executor::RangeJoin;
-use common_sql::executor::RuntimeFilterSource;
 use common_sql::ColumnBinding;
 use common_sql::IndexType;
 
-use crate::pipelines::processors::transforms::hash_join::BuildSpillCoordinator;
-use crate::pipelines::processors::transforms::hash_join::BuildSpillState;
-use crate::pipelines::processors::transforms::hash_join::HashJoinBuildState;
-use crate::pipelines::processors::transforms::hash_join::HashJoinProbeState;
-use crate::pipelines::processors::transforms::hash_join::ProbeSpillState;
+use crate::pipelines::processors::transforms::range_join::RangeJoinState;
 use crate::pipelines::processors::transforms::range_join::TransformRangeJoinLeft;
 use crate::pipelines::processors::transforms::range_join::TransformRangeJoinRight;
+use crate::pipelines::processors::transforms::BuildSpillCoordinator;
+use crate::pipelines::processors::transforms::BuildSpillState;
+use crate::pipelines::processors::transforms::HashJoinBuildState;
+use crate::pipelines::processors::transforms::HashJoinProbeState;
 use crate::pipelines::processors::transforms::MaterializedCteSink;
 use crate::pipelines::processors::transforms::MaterializedCteState;
-use crate::pipelines::processors::transforms::RangeJoinState;
+use crate::pipelines::processors::transforms::ProbeSpillState;
 use crate::pipelines::processors::transforms::RuntimeFilterState;
+use crate::pipelines::processors::transforms::TransformHashJoinBuild;
+use crate::pipelines::processors::transforms::TransformHashJoinProbe;
 use crate::pipelines::processors::HashJoinDesc;
 use crate::pipelines::processors::HashJoinState;
 use crate::pipelines::processors::SinkRuntimeFilterSource;
-use crate::pipelines::processors::TransformHashJoinBuild;
-use crate::pipelines::processors::TransformHashJoinProbe;
 use crate::pipelines::processors::TransformRuntimeFilter;
 use crate::pipelines::PipelineBuilder;
 use crate::sessions::QueryContext;
@@ -106,6 +106,7 @@ impl PipelineBuilder {
             right_side_context,
             self.enable_profiling,
             self.proc_profs.clone(),
+            self.main_pipeline.plans_scope.clone(),
         );
         right_side_builder.cte_state = self.cte_state.clone();
         let mut right_res = right_side_builder.finalize(&range_join.right)?;
@@ -124,9 +125,8 @@ impl PipelineBuilder {
                 Ok(ProcessorPtr::create(transform))
             }
         })?;
-        self.pipelines.push(right_res.main_pipeline);
-        self.pipelines
-            .extend(right_res.sources_pipelines.into_iter());
+        self.pipelines.push(right_res.main_pipeline.finalize());
+        self.pipelines.extend(right_res.sources_pipelines);
         Ok(())
     }
 
@@ -159,6 +159,7 @@ impl PipelineBuilder {
             build_side_context,
             self.enable_profiling,
             self.proc_profs.clone(),
+            self.main_pipeline.plans_scope.clone(),
         );
         build_side_builder.cte_state = self.cte_state.clone();
         let mut build_res = build_side_builder.finalize(build)?;
@@ -213,9 +214,8 @@ impl PipelineBuilder {
             build_res.main_pipeline.add_sink(create_sink_processor)?;
         }
 
-        self.pipelines.push(build_res.main_pipeline);
-        self.pipelines
-            .extend(build_res.sources_pipelines.into_iter());
+        self.pipelines.push(build_res.main_pipeline.finalize());
+        self.pipelines.extend(build_res.sources_pipelines);
         Ok(())
     }
 
@@ -405,6 +405,7 @@ impl PipelineBuilder {
             left_side_ctx,
             self.enable_profiling,
             self.proc_profs.clone(),
+            self.main_pipeline.plans_scope.clone(),
         );
         left_side_builder.cte_state = self.cte_state.clone();
         let mut left_side_pipeline = left_side_builder.finalize(left_side)?;
@@ -425,9 +426,9 @@ impl PipelineBuilder {
             );
             Ok(ProcessorPtr::create(transform))
         })?;
-        self.pipelines.push(left_side_pipeline.main_pipeline);
         self.pipelines
-            .extend(left_side_pipeline.sources_pipelines.into_iter());
+            .push(left_side_pipeline.main_pipeline.finalize());
+        self.pipelines.extend(left_side_pipeline.sources_pipelines);
         Ok(())
     }
 }

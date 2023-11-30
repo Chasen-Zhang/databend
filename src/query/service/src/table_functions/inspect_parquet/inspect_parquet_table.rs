@@ -40,7 +40,8 @@ use common_expression::Value;
 use common_meta_app::schema::TableIdent;
 use common_meta_app::schema::TableInfo;
 use common_meta_app::schema::TableMeta;
-use common_pipeline_core::processors::processor::ProcessorPtr;
+use common_pipeline_core::processors::ProcessorPtr;
+use common_pipeline_core::Pipeline;
 use common_pipeline_sources::AsyncSource;
 use common_pipeline_sources::AsyncSourcer;
 use common_sql::binder::resolve_stage_location;
@@ -49,8 +50,7 @@ use common_storage::read_metadata_async;
 use common_storage::StageFilesInfo;
 use common_storages_fuse::table_functions::string_literal;
 
-use crate::pipelines::processors::port::OutputPort;
-use crate::pipelines::Pipeline;
+use crate::pipelines::processors::OutputPort;
 use crate::sessions::TableContext;
 use crate::table_functions::TableFunction;
 
@@ -210,6 +210,20 @@ impl AsyncSource for InspectParquetSource {
         self.is_finished = true;
         let uri = self.uri.strip_prefix('@').unwrap().to_string();
         let (stage_info, path) = resolve_stage_location(&self.ctx, &uri).await?;
+        let enable_stage_udf_priv_check =
+            self.ctx.get_settings().get_enable_stage_udf_priv_check()?;
+        if enable_stage_udf_priv_check {
+            let visibility_checker = self.ctx.get_visibility_checker().await?;
+            if !stage_info.is_from_uri
+                && !visibility_checker.check_stage_read_visibility(&stage_info.stage_name)
+            {
+                return Err(ErrorCode::PermissionDenied(format!(
+                    "Permission denied, privilege READ is required on stage {} for user {}",
+                    stage_info.stage_name.clone(),
+                    &self.ctx.get_current_user()?.identity(),
+                )));
+            }
+        }
 
         let operator = init_stage_operator(&stage_info)?;
 

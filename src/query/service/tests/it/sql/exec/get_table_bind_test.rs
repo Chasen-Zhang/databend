@@ -41,6 +41,7 @@ use common_io::prelude::FormatSettings;
 use common_meta_app::principal::FileFormatParams;
 use common_meta_app::principal::OnErrorMode;
 use common_meta_app::principal::RoleInfo;
+use common_meta_app::principal::UserDefinedConnection;
 use common_meta_app::principal::UserInfo;
 use common_meta_app::schema::CatalogInfo;
 use common_meta_app::schema::CountTablesReply;
@@ -100,8 +101,8 @@ use common_meta_app::schema::UpsertTableOptionReply;
 use common_meta_app::schema::UpsertTableOptionReq;
 use common_meta_app::schema::VirtualColumnMeta;
 use common_meta_types::MetaId;
+use common_pipeline_core::processors::profile::Profile;
 use common_pipeline_core::InputError;
-use common_settings::ChangeValue;
 use common_settings::Settings;
 use common_sql::Planner;
 use common_storage::CopyStatus;
@@ -598,19 +599,15 @@ impl TableContext for CtxDelegation {
         todo!()
     }
 
-    fn apply_changed_settings(&self, _changes: HashMap<String, ChangeValue>) -> Result<()> {
-        todo!()
-    }
-
-    fn get_changed_settings(&self) -> HashMap<String, ChangeValue> {
-        todo!()
-    }
-
     fn get_data_operator(&self) -> Result<DataOperator> {
         self.ctx.get_data_operator()
     }
 
     async fn get_file_format(&self, _name: &str) -> Result<FileFormatParams> {
+        todo!()
+    }
+
+    async fn get_connection(&self, _name: &str) -> Result<UserDefinedConnection> {
         todo!()
     }
 
@@ -697,11 +694,15 @@ impl TableContext for CtxDelegation {
     fn get_license_key(&self) -> String {
         self.ctx.get_license_key()
     }
+
+    fn get_queries_profile(&self) -> HashMap<String, Vec<Arc<Profile>>> {
+        todo!()
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_same_table_once() -> Result<()> {
-    let fixture = TestFixture::new().await;
+    let fixture = TestFixture::new().await?;
     let query = format!(
         "select * from {}.{} join {}.{} as t2 join {}.{} as t3",
         fixture.default_db_name().as_str(),
@@ -712,7 +713,7 @@ async fn test_get_same_table_once() -> Result<()> {
         fixture.default_table_name().as_str()
     );
     fixture.create_default_table().await?;
-    let ctx = fixture.ctx();
+    let ctx = fixture.new_query_ctx().await?;
     let catalog = ctx.get_catalog("default").await?;
     let faked_catalog = FakedCatalog {
         cat: catalog,

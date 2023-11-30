@@ -14,6 +14,7 @@
 
 use std::any::Any;
 use std::cmp::min;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -54,15 +55,18 @@ use common_meta_app::principal::FileFormatParams;
 use common_meta_app::principal::OnErrorMode;
 use common_meta_app::principal::RoleInfo;
 use common_meta_app::principal::StageFileFormatType;
+use common_meta_app::principal::UserDefinedConnection;
 use common_meta_app::principal::UserInfo;
+use common_meta_app::principal::COPY_MAX_FILES_COMMIT_MSG;
+use common_meta_app::principal::COPY_MAX_FILES_PER_COMMIT;
 use common_meta_app::schema::CatalogInfo;
 use common_meta_app::schema::GetTableCopiedFileReq;
 use common_meta_app::schema::TableInfo;
+use common_metrics::storage::*;
+use common_pipeline_core::processors::profile::Profile;
 use common_pipeline_core::InputError;
-use common_settings::ChangeValue;
 use common_settings::Settings;
 use common_sql::IndexType;
-use common_storage::metrics::copy::metrics_inc_filter_out_copied_files_request_milliseconds;
 use common_storage::CopyStatus;
 use common_storage::DataOperator;
 use common_storage::FileStatus;
@@ -96,7 +100,7 @@ use crate::storages::Table;
 
 const MYSQL_VERSION: &str = "8.0.26";
 const CLICKHOUSE_VERSION: &str = "8.12.14";
-const MAX_QUERY_COPIED_FILES_NUM: usize = 1000;
+const COPIED_FILES_FILTER_BATCH_SIZE: usize = 1000;
 
 #[derive(Clone)]
 pub struct QueryContext {
@@ -541,6 +545,13 @@ impl TableContext for QueryContext {
     }
 
     fn get_function_context(&self) -> Result<FunctionContext> {
+        let external_server_connect_timeout_secs = self
+            .get_settings()
+            .get_external_server_connect_timeout_secs()?;
+        let external_server_request_timeout_secs = self
+            .get_settings()
+            .get_external_server_request_timeout_secs()?;
+
         let tz = self.get_settings().get_timezone()?;
         let tz = TzFactory::instance().get_by_name(&tz)?;
         let numeric_cast_option = self.get_settings().get_numeric_cast_option()?;
@@ -558,6 +569,9 @@ impl TableContext for QueryContext {
             openai_api_embedding_base_url: query_config.openai_api_embedding_base_url.clone(),
             openai_api_embedding_model: query_config.openai_api_embedding_model.clone(),
             openai_api_completion_model: query_config.openai_api_completion_model.clone(),
+
+            external_server_connect_timeout_secs,
+            external_server_request_timeout_secs,
         })
     }
 
@@ -566,12 +580,13 @@ impl TableContext for QueryContext {
     }
 
     fn get_settings(&self) -> Arc<Settings> {
-        if self.query_settings.get_changes().is_empty() {
-            let session_change = self.shared.get_changed_settings();
+        if !self.query_settings.is_changed() {
             unsafe {
-                self.query_settings.unchecked_apply_changes(session_change);
+                self.query_settings
+                    .unchecked_apply_changes(&self.shared.get_settings());
             }
         }
+
         self.query_settings.clone()
     }
 
@@ -648,20 +663,6 @@ impl TableContext for QueryContext {
         None
     }
 
-    fn apply_changed_settings(&self, changes: HashMap<String, ChangeValue>) -> Result<()> {
-        self.shared.apply_changed_settings(changes)
-    }
-
-    fn get_changed_settings(&self) -> HashMap<String, ChangeValue> {
-        if self.query_settings.get_changes().is_empty() {
-            let session_change = self.shared.get_changed_settings();
-            unsafe {
-                self.query_settings.unchecked_apply_changes(session_change);
-            }
-        }
-        self.query_settings.get_changes()
-    }
-
     // Get the storage data accessor operator from the session manager.
     fn get_data_operator(&self) -> Result<DataOperator> {
         Ok(self.shared.data_operator.clone())
@@ -680,6 +681,11 @@ impl TableContext for QueryContext {
                     .file_format_params)
             }
         }
+    }
+    async fn get_connection(&self, name: &str) -> Result<UserDefinedConnection> {
+        let user_mgr = UserApiProvider::instance();
+        let tenant = self.get_tenant();
+        user_mgr.get_connection(&tenant, name).await
     }
 
     /// Fetch a Table by db and table name.
@@ -715,9 +721,9 @@ impl TableContext for QueryContext {
             .await?;
         let table_id = table.get_id();
 
-        let mut limit: usize = 0;
+        let mut result_size: usize = 0;
         let max_files = max_files.unwrap_or(usize::MAX);
-        let batch_size = min(MAX_QUERY_COPIED_FILES_NUM, max_files);
+        let batch_size = min(COPIED_FILES_FILTER_BATCH_SIZE, max_files);
 
         let mut results = Vec::with_capacity(files.len());
 
@@ -730,16 +736,19 @@ impl TableContext for QueryContext {
                 .await?
                 .file_info;
 
-            metrics_inc_filter_out_copied_files_request_milliseconds(
+            metrics_inc_copy_filter_out_copied_files_request_milliseconds(
                 Instant::now().duration_since(start_request).as_millis() as u64,
             );
             // Colored
             for file in chunk {
                 if !copied_files.contains_key(&file.path) {
                     results.push(file.clone());
-                    limit += 1;
-                    if limit == max_files {
+                    result_size += 1;
+                    if result_size == max_files {
                         return Ok(results);
+                    }
+                    if result_size > COPY_MAX_FILES_PER_COMMIT {
+                        return Err(ErrorCode::Internal(COPY_MAX_FILES_COMMIT_MSG));
                     }
                 }
             }
@@ -796,9 +805,30 @@ impl TableContext for QueryContext {
     }
 
     fn get_license_key(&self) -> String {
-        self.get_settings()
-            .get_enterprise_license()
-            .unwrap_or_default()
+        unsafe {
+            self.get_settings()
+                .get_enterprise_license()
+                .unwrap_or_default()
+        }
+    }
+
+    fn get_queries_profile(&self) -> HashMap<String, Vec<Arc<Profile>>> {
+        let mut queries_profile = SessionManager::instance().get_queries_profile();
+
+        let exchange_profiles = DataExchangeManager::instance().get_queries_profile();
+
+        for (query_id, profiles) in exchange_profiles {
+            match queries_profile.entry(query_id) {
+                Entry::Vacant(v) => {
+                    v.insert(profiles);
+                }
+                Entry::Occupied(mut v) => {
+                    v.get_mut().extend(profiles);
+                }
+            }
+        }
+
+        queries_profile
     }
 }
 

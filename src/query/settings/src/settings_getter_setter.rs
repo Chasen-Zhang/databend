@@ -22,10 +22,17 @@ use crate::settings_default::DefaultSettings;
 use crate::ChangeValue;
 use crate::ReplaceIntoShuffleStrategy;
 use crate::ScopeLevel;
+use crate::SettingMode;
 
 impl Settings {
     // Get u64 value, we don't get from the metasrv.
     fn try_get_u64(&self, key: &str) -> Result<u64> {
+        DefaultSettings::check_setting_mode(key, SettingMode::Read)?;
+
+        unsafe { self.unchecked_try_get_u64(key) }
+    }
+
+    unsafe fn unchecked_try_get_u64(&self, key: &str) -> Result<u64> {
         match self.changes.get(key) {
             Some(v) => v.value.as_u64(),
             None => DefaultSettings::try_get_u64(key),
@@ -33,6 +40,12 @@ impl Settings {
     }
 
     fn try_get_string(&self, key: &str) -> Result<String> {
+        DefaultSettings::check_setting_mode(key, SettingMode::Read)?;
+
+        unsafe { self.unchecked_try_get_string(key) }
+    }
+
+    unsafe fn unchecked_try_get_string(&self, key: &str) -> Result<String, ErrorCode> {
         match self.changes.get(key) {
             Some(v) => Ok(v.value.as_string()),
             None => DefaultSettings::try_get_string(key),
@@ -40,6 +53,12 @@ impl Settings {
     }
 
     fn try_set_u64(&self, key: &str, val: u64) -> Result<()> {
+        DefaultSettings::check_setting_mode(key, SettingMode::Write)?;
+
+        unsafe { self.unchecked_try_set_u64(key, val) }
+    }
+
+    unsafe fn unchecked_try_set_u64(&self, key: &str, val: u64) -> Result<()> {
         match DefaultSettings::instance()?.settings.get(key) {
             None => Err(ErrorCode::UnknownVariable(format!(
                 "Unknown variable: {:?}",
@@ -63,9 +82,36 @@ impl Settings {
         }
     }
 
+    pub fn set_setting(&self, k: String, v: String) -> Result<()> {
+        DefaultSettings::check_setting_mode(&k, SettingMode::Write)?;
+
+        unsafe { self.unchecked_set_setting(k, v) }
+    }
+
+    unsafe fn unchecked_set_setting(&self, k: String, v: String) -> Result<(), ErrorCode> {
+        if let (key, Some(value)) = DefaultSettings::convert_value(k.clone(), v)? {
+            self.changes.insert(key, ChangeValue {
+                value,
+                level: ScopeLevel::Session,
+            });
+
+            return Ok(());
+        }
+
+        Err(ErrorCode::UnknownVariable(format!(
+            "Unknown variable: {:?}",
+            k
+        )))
+    }
+
     // Get max_block_size.
     pub fn get_max_block_size(&self) -> Result<u64> {
         self.try_get_u64("max_block_size")
+    }
+
+    // Max block size for parquet reader
+    pub fn get_parquet_max_block_size(&self) -> Result<u64> {
+        self.try_get_u64("parquet_max_block_size")
     }
 
     // Get max_threads.
@@ -188,8 +234,9 @@ impl Settings {
         Ok(self.try_get_u64("enable_cbo")? != 0)
     }
 
-    pub fn get_disable_join_reorder(&self) -> Result<bool> {
-        Ok(self.try_get_u64("disable_join_reorder")? != 0)
+    /// # Safety
+    pub unsafe fn get_disable_join_reorder(&self) -> Result<bool> {
+        Ok(self.unchecked_try_get_u64("disable_join_reorder")? != 0)
     }
 
     pub fn get_join_spilling_threshold(&self) -> Result<usize> {
@@ -208,6 +255,7 @@ impl Settings {
         match self.try_get_string("sql_dialect")?.as_str() {
             "hive" => Ok(Dialect::Hive),
             "mysql" => Ok(Dialect::MySQL),
+            "experimental" => Ok(Dialect::Experimental),
             _ => Ok(Dialect::PostgreSQL),
         }
     }
@@ -291,6 +339,10 @@ impl Settings {
         Ok(self.try_get_u64("enable_table_lock")? != 0)
     }
 
+    pub fn get_enable_stage_udf_priv_check(&self) -> Result<bool> {
+        Ok(self.try_get_u64("experiment_enable_stage_udf_priv_check")? != 0)
+    }
+
     pub fn get_table_lock_expire_secs(&self) -> Result<u64> {
         self.try_get_u64("table_lock_expire_secs")
     }
@@ -299,16 +351,19 @@ impl Settings {
         self.try_get_u64("acquire_lock_timeout")
     }
 
-    pub fn get_enterprise_license(&self) -> Result<String> {
-        self.try_get_string("enterprise_license")
+    /// # Safety
+    pub unsafe fn get_enterprise_license(&self) -> Result<String> {
+        self.unchecked_try_get_string("enterprise_license")
     }
 
-    pub fn set_enterprise_license(&self, val: String) -> Result<()> {
-        self.set_setting("enterprise_license".to_string(), val)
+    /// # Safety
+    pub unsafe fn set_enterprise_license(&self, val: String) -> Result<()> {
+        self.unchecked_set_setting("enterprise_license".to_string(), val)
     }
 
-    pub fn get_deduplicate_label(&self) -> Result<Option<String>> {
-        let deduplicate_label = self.try_get_string("deduplicate_label")?;
+    /// # Safety
+    pub unsafe fn get_deduplicate_label(&self) -> Result<Option<String>> {
+        let deduplicate_label = self.unchecked_try_get_string("deduplicate_label")?;
         if deduplicate_label.is_empty() {
             Ok(None)
         } else {
@@ -316,8 +371,9 @@ impl Settings {
         }
     }
 
-    pub fn set_deduplicate_label(&self, val: String) -> Result<()> {
-        self.set_setting("deduplicate_label".to_string(), val)
+    /// # Safety
+    pub unsafe fn set_deduplicate_label(&self, val: String) -> Result<()> {
+        self.unchecked_set_setting("deduplicate_label".to_string(), val)
     }
 
     pub fn get_enable_distributed_copy(&self) -> Result<bool> {
@@ -330,6 +386,10 @@ impl Settings {
 
     pub fn get_enable_distributed_merge_into(&self) -> Result<bool> {
         Ok(self.try_get_u64("enable_distributed_merge_into")? != 0)
+    }
+
+    pub fn get_merge_into_static_filter_partition_threshold(&self) -> Result<u64> {
+        self.try_get_u64("merge_into_static_filter_partition_threshold")
     }
 
     pub fn get_enable_distributed_replace(&self) -> Result<bool> {
@@ -422,5 +482,13 @@ impl Settings {
 
     pub fn get_numeric_cast_option(&self) -> Result<String> {
         self.try_get_string("numeric_cast_option")
+    }
+
+    pub fn get_external_server_connect_timeout_secs(&self) -> Result<u64> {
+        self.try_get_u64("external_server_connect_timeout_secs")
+    }
+
+    pub fn get_external_server_request_timeout_secs(&self) -> Result<u64> {
+        self.try_get_u64("external_server_request_timeout_secs")
     }
 }

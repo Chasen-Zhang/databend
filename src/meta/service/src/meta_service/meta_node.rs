@@ -308,6 +308,7 @@ impl MetaNode {
             install_snapshot_timeout: config.install_snapshot_timeout,
             snapshot_policy: SnapshotPolicy::LogsSinceLast(config.snapshot_logs_since_last),
             max_in_snapshot_log_to_keep: config.max_applied_log_to_keep,
+            snapshot_max_chunk_size: config.snapshot_chunk_size,
             ..Default::default()
         }
         .validate()
@@ -850,9 +851,13 @@ impl MetaNode {
         let mut cluster_node_ids = BTreeSet::new();
         cluster_node_ids.insert(node_id);
 
-        // TODO(1): initialize() and add_node() are not done atomically.
-        //          There is an issue that just after initializing the cluster, the node will be used but no node info is found.
-        //          To address it, upgrade to membership with embedded Node.
+        // initialize() and add_node() are not done atomically.
+        // There is an issue that just after initializing the cluster,
+        // the node will be used but no node info is found.
+        // Thus meta-server can only be initialized with a single node.
+        //
+        // We do not store node info in membership config,
+        // because every start a meta-server node updates its latest configured address.
         self.raft.initialize(cluster_node_ids).await?;
 
         info!("initialized cluster");

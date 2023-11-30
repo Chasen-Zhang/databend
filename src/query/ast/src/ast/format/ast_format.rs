@@ -558,7 +558,6 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
 
         let key_name = match accessor {
             MapAccessor::Bracket { key } => format!("accessor [{key}]"),
-            MapAccessor::Dot { key } => format!("accessor .{key}"),
             MapAccessor::DotNumber { key } => format!("accessor .{key}"),
             MapAccessor::Colon { key } => format!("accessor :{key}"),
         };
@@ -709,6 +708,7 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
             ExplainKind::Pipeline => "Pipeline",
             ExplainKind::Fragments => "Fragments",
             ExplainKind::Raw => "Raw",
+            ExplainKind::Optimized => "Optimized",
             ExplainKind::Plan => "Plan",
             ExplainKind::Memo(_) => "Memo",
             ExplainKind::JOIN => "JOIN",
@@ -1298,6 +1298,10 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
             let database_node = FormatTreeNode::new(database_format_ctx);
             children.push(database_node);
         }
+        if let Some(limit) = &stmt.limit {
+            self.visit_show_limit(limit);
+            children.push(self.children.pop().unwrap());
+        }
         let name = "ShowDropTables".to_string();
         let format_ctx = AstFormatContext::with_children(name, children.len());
         let node = FormatTreeNode::with_children(format_ctx, children);
@@ -1661,6 +1665,62 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
         let child = self.children.pop().unwrap();
 
         let name = "DropView".to_string();
+        let format_ctx = AstFormatContext::with_children(name, 1);
+        let node = FormatTreeNode::with_children(format_ctx, vec![child]);
+        self.children.push(node);
+    }
+
+    fn visit_create_stream(&mut self, stmt: &'ast CreateStreamStmt) {
+        let mut children = Vec::new();
+        self.visit_table_ref(&stmt.catalog, &stmt.database, &stmt.stream);
+        children.push(self.children.pop().unwrap());
+        self.visit_table_ref(&None, &stmt.table_database, &stmt.table);
+        children.push(self.children.pop().unwrap());
+        if let Some(point) = &stmt.stream_point {
+            self.visit_stream_point(point);
+            children.push(self.children.pop().unwrap());
+        }
+        if let Some(comment) = &stmt.comment {
+            let comment_format_ctx = AstFormatContext::new(format!("Comment {}", comment));
+            children.push(FormatTreeNode::new(comment_format_ctx));
+        }
+
+        let name = "CreateStream".to_string();
+        let format_ctx = AstFormatContext::with_children(name, children.len());
+        let node = FormatTreeNode::with_children(format_ctx, children);
+        self.children.push(node);
+    }
+
+    fn visit_drop_stream(&mut self, stmt: &'ast DropStreamStmt) {
+        self.visit_table_ref(&stmt.catalog, &stmt.database, &stmt.stream);
+        let child = self.children.pop().unwrap();
+
+        let name = "DropStream".to_string();
+        let format_ctx = AstFormatContext::with_children(name, 1);
+        let node = FormatTreeNode::with_children(format_ctx, vec![child]);
+        self.children.push(node);
+    }
+
+    fn visit_show_streams(&mut self, stmt: &'ast ShowStreamsStmt) {
+        let mut children = Vec::new();
+        if let Some(database) = &stmt.database {
+            self.visit_database_ref(&stmt.catalog, database);
+            children.push(self.children.pop().unwrap());
+        }
+        if let Some(limit) = &stmt.limit {
+            self.visit_show_limit(limit);
+            children.push(self.children.pop().unwrap());
+        }
+        let name = "ShowStreams".to_string();
+        let format_ctx = AstFormatContext::with_children(name, children.len());
+        let node = FormatTreeNode::with_children(format_ctx, children);
+        self.children.push(node);
+    }
+
+    fn visit_describe_stream(&mut self, stmt: &'ast DescribeStreamStmt) {
+        self.visit_table_ref(&stmt.catalog, &stmt.database, &stmt.stream);
+        let child = self.children.pop().unwrap();
+        let name = "DescribeStream".to_string();
         let format_ctx = AstFormatContext::with_children(name, 1);
         let node = FormatTreeNode::with_children(format_ctx, vec![child]);
         self.children.push(node);
@@ -2737,7 +2797,7 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
                 let node = FormatTreeNode::with_children(format_ctx, vec![child]);
                 self.children.push(node);
             }
-            SelectTarget::QualifiedName { .. } => {
+            SelectTarget::StarColumns { .. } => {
                 let name = format!("Target {}", target);
                 let format_ctx = AstFormatContext::new(name);
                 let node = FormatTreeNode::new(format_ctx);
@@ -2810,12 +2870,18 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
             }
             TableReference::Subquery {
                 span: _,
+                lateral,
                 subquery,
                 alias,
             } => {
                 self.visit_query(subquery);
                 let child = self.children.pop().unwrap();
-                let name = "Subquery".to_string();
+                let name = if *lateral {
+                    "LateralSubquery"
+                } else {
+                    "Subquery"
+                }
+                .to_string();
                 let format_ctx = if let Some(alias) = alias {
                     AstFormatContext::with_children_alias(name, 1, Some(format!("{}", alias)))
                 } else {
@@ -2826,6 +2892,7 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
             }
             TableReference::TableFunction {
                 span: _,
+                lateral,
                 name,
                 params,
                 named_params,
@@ -2845,7 +2912,11 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
                     );
                     children.push(node);
                 }
-                let func_name = format!("TableFunction {}", name);
+                let func_name = if *lateral {
+                    format!("Lateral TableFunction {}", name)
+                } else {
+                    format!("TableFunction {}", name)
+                };
                 let format_ctx = if let Some(alias) = alias {
                     AstFormatContext::with_children_alias(
                         func_name,
@@ -2914,6 +2985,12 @@ impl<'ast> Visitor<'ast> for AstFormatVisitor {
                 let node = FormatTreeNode::with_children(format_ctx, vec![child]);
                 self.children.push(node);
             }
+        }
+    }
+
+    fn visit_stream_point(&mut self, point: &'ast StreamPoint) {
+        match point {
+            StreamPoint::AtStream { database, name } => self.visit_table_ref(&None, database, name),
         }
     }
 

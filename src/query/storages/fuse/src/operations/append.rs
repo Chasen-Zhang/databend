@@ -25,13 +25,13 @@ use common_expression::DataSchema;
 use common_expression::Expr;
 use common_expression::SortColumnDescription;
 use common_functions::BUILTIN_FUNCTIONS;
-use common_pipeline_core::processors::processor::ProcessorPtr;
+use common_pipeline_core::processors::ProcessorPtr;
 use common_pipeline_core::Pipeline;
-use common_pipeline_transforms::processors::transforms::create_dummy_items;
-use common_pipeline_transforms::processors::transforms::transform_block_compact_for_copy::BlockCompactorForCopy;
-use common_pipeline_transforms::processors::transforms::BlockCompactor;
-use common_pipeline_transforms::processors::transforms::TransformCompact;
-use common_pipeline_transforms::processors::transforms::TransformSortPartial;
+use common_pipeline_transforms::processors::create_dummy_items;
+use common_pipeline_transforms::processors::BlockCompactor;
+use common_pipeline_transforms::processors::BlockCompactorForCopy;
+use common_pipeline_transforms::processors::TransformCompact;
+use common_pipeline_transforms::processors::TransformSortPartial;
 use common_sql::evaluator::BlockOperator;
 use common_sql::evaluator::CompoundBlockOperator;
 
@@ -219,7 +219,8 @@ impl FuseTable {
             return Ok(ClusterStatsGenerator::default());
         }
 
-        let input_schema = modified_schema.unwrap_or(DataSchema::from(self.schema()).into());
+        let input_schema =
+            modified_schema.unwrap_or(DataSchema::from(self.schema_with_stream()).into());
         let mut merged: Vec<DataField> = input_schema.fields().clone();
 
         let mut cluster_key_index = Vec::with_capacity(cluster_keys.len());

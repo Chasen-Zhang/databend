@@ -33,6 +33,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::HttpQueryContext;
+use super::RemoveReason;
 use crate::interpreters::InterpreterQueryLog;
 use crate::servers::http::v1::query::execute_state::ExecuteStarting;
 use crate::servers::http::v1::query::execute_state::ExecuteStopped;
@@ -136,6 +137,8 @@ pub struct HttpSessionConf {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_roles: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_server_session_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<BTreeMap<String, String>>,
@@ -166,6 +169,7 @@ pub struct HttpQueryResponseInternal {
     pub session_id: String,
     pub session: Option<HttpSessionConf>,
     pub state: ResponseState,
+    pub node_id: String,
 }
 
 pub enum ExpireState {
@@ -183,6 +187,7 @@ pub enum ExpireResult {
 pub struct HttpQuery {
     pub(crate) id: String,
     pub(crate) session_id: String,
+    pub(crate) node_id: String,
     request: HttpQueryRequest,
     state: Arc<RwLock<Executor>>,
     page_manager: Arc<TokioMutex<PageManager>>,
@@ -215,7 +220,9 @@ impl HttpQuery {
                             "last query on the session not finished",
                         ));
                     } else {
-                        http_query_manager.remove_query(&query_id).await;
+                        let _ = http_query_manager
+                            .remove_query(&query_id, RemoveReason::Canceled)
+                            .await;
                     }
                 }
                 // wait for Arc<QueryContextShared> to drop and detach itself from session
@@ -241,8 +248,13 @@ impl HttpQuery {
                 session.set_current_database(db.clone());
             }
             if let Some(role) = &session_conf.role {
-                session.set_current_role_checked(role, true).await?;
+                session.set_current_role_checked(role).await?;
             }
+            // if the secondary_roles are None (which is the common case), it will not send any rpc on validation.
+            session
+                .set_secondary_roles_checked(session_conf.secondary_roles.clone())
+                .await?;
+            // TODO(liyz): pass secondary roles here
             if let Some(conf_settings) = &session_conf.settings {
                 let settings = session.get_settings();
                 for (k, v) in conf_settings {
@@ -280,7 +292,9 @@ impl HttpQuery {
         // Deduplicate label is used on the DML queries which may be retried by the client.
         // It can be used to avoid the duplicated execution of the DML queries.
         if let Some(label) = deduplicate_label {
-            ctx.get_settings().set_deduplicate_label(label.clone())?;
+            unsafe {
+                ctx.get_settings().set_deduplicate_label(label.clone())?;
+            }
         }
         if let Some(ua) = user_agent {
             ctx.set_ua(ua.clone());
@@ -290,8 +304,9 @@ impl HttpQuery {
         ctx.set_id(query_id.clone());
 
         let session_id = session.get_id().clone();
+        let node_id = ctx.get_cluster().local_id.clone();
         let sql = &request.sql;
-        info!(query_id = query_id, session_id = session_id, sql = sql; "create query");
+        info!(query_id = query_id, session_id = session_id, node_id = node_id, sql = sql; "create query");
 
         // Stage attachment is used to carry the data payload to the INSERT/REPLACE statements.
         // When stage attachment is specified, the query may looks like `INSERT INTO mytbl VALUES;`,
@@ -369,9 +384,11 @@ impl HttpQuery {
             schema,
             format_settings,
         )));
+
         let query = HttpQuery {
             id: query_id,
             session_id,
+            node_id,
             request,
             state,
             page_manager: data,
@@ -393,6 +410,7 @@ impl HttpQuery {
             data,
             state,
             session: Some(session),
+            node_id: self.node_id.clone(),
             session_id: self.session_id.clone(),
         })
     }
@@ -405,6 +423,7 @@ impl HttpQuery {
         HttpQueryResponseInternal {
             data: None,
             session_id: self.session_id.clone(),
+            node_id: self.node_id.clone(),
             state,
             session: Some(session),
         }
@@ -425,13 +444,6 @@ impl HttpQuery {
 
     #[async_backtrace::framed]
     async fn get_response_session(&self) -> HttpSessionConf {
-        let executor = self.state.read().await;
-        let session_state = executor.get_session_state();
-        let settings = session_state
-            .settings
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.value.as_string()))
-            .collect::<BTreeMap<_, _>>();
         let keep_server_session_secs = self
             .request
             .session
@@ -439,10 +451,29 @@ impl HttpQuery {
             .map(|v| v.keep_server_session_secs)
             .unwrap_or(None);
 
-        // TODO: add current role here
+        // reply the updated session state, includes:
+        // - current_database: updated by USE XXX;
+        // - role: updated by SET ROLE;
+        // - secondary_roles: updated by SET SECONDARY ROLES ALL|NONE;
+        // - settings: updated by SET XXX = YYY;
+        let executor = self.state.read().await;
+        let session_state = executor.get_session_state();
+
+        let settings = session_state
+            .settings
+            .as_ref()
+            .into_iter()
+            .filter(|item| item.default_value != item.user_value)
+            .map(|item| (item.name.to_string(), item.user_value.as_string()))
+            .collect::<BTreeMap<_, _>>();
+        let database = session_state.current_database.clone();
+        let role = session_state.current_role.clone();
+        let secondary_roles = session_state.secondary_roles.clone();
+
         HttpSessionConf {
-            database: Some(session_state.current_database),
-            role: session_state.current_role,
+            database: Some(database),
+            role,
+            secondary_roles,
             keep_server_session_secs,
             settings: Some(settings),
         }
@@ -462,17 +493,17 @@ impl HttpQuery {
     }
 
     #[async_backtrace::framed]
-    pub async fn kill(&self) {
-        Executor::stop(
-            &self.state,
-            Err(ErrorCode::AbortedQuery("killed by http")),
-            true,
-        )
-        .await;
+    pub async fn kill(&self, reason: &str) {
+        // the query will be removed from the query manager before the session is dropped.
+        self.detach().await;
+
+        Executor::stop(&self.state, Err(ErrorCode::AbortedQuery(reason)), true).await;
     }
 
     #[async_backtrace::framed]
-    pub async fn detach(&self) {
+    async fn detach(&self) {
+        info!("{}: http query detached", &self.id);
+
         let data = self.page_manager.lock().await;
         data.detach().await
     }

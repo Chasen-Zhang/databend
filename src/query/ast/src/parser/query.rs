@@ -354,16 +354,16 @@ pub fn with(i: Input) -> IResult<With> {
     )(i)
 }
 
-pub fn exclude_col(i: Input) -> IResult<Vec<ColumnID>> {
+pub fn exclude_col(i: Input) -> IResult<Vec<Identifier>> {
     let var = map(
         rule! {
-            #column_id
+            #ident
         },
         |col| vec![col],
     );
     let vars = map(
         rule! {
-             "(" ~ ^#comma_separated_list1(column_id) ~ ^")"
+             "(" ~ ^#comma_separated_list1(ident) ~ ^")"
         },
         |(_, cols, _)| cols,
     );
@@ -375,35 +375,95 @@ pub fn exclude_col(i: Input) -> IResult<Vec<ColumnID>> {
 }
 
 pub fn select_target(i: Input) -> IResult<SelectTarget> {
-    let qualified_wildcard = map(
+    fn qualified_wildcard_transform(
+        res: Option<(Identifier, &Token<'_>, Option<(Identifier, &Token<'_>)>)>,
+        star: &Token<'_>,
+        opt_exclude: Option<(&Token<'_>, Vec<Identifier>)>,
+    ) -> SelectTarget {
+        let column_filter = opt_exclude.map(|(_, exclude)| ColumnFilter::Excludes(exclude));
+        match res {
+            Some((fst, _, Some((snd, _)))) => SelectTarget::StarColumns {
+                qualified: vec![
+                    Indirection::Identifier(fst),
+                    Indirection::Identifier(snd),
+                    Indirection::Star(Some(star.span)),
+                ],
+                column_filter,
+            },
+            Some((fst, _, None)) => SelectTarget::StarColumns {
+                qualified: vec![
+                    Indirection::Identifier(fst),
+                    Indirection::Star(Some(star.span)),
+                ],
+                column_filter,
+            },
+            None => SelectTarget::StarColumns {
+                qualified: vec![Indirection::Star(Some(star.span))],
+                column_filter,
+            },
+        }
+    }
+
+    let qualified_wildcard = alt((
+        // select * exclude ...
+        map(
+            rule! {
+               ( #ident ~ "." ~ ( #ident ~ "." )? )? ~ "*" ~ ( EXCLUDE ~ #exclude_col )?
+            },
+            |(res, star, opt_exclude)| qualified_wildcard_transform(res, star, opt_exclude),
+        ),
+        // select columns(* exclude ...)
+        map(
+            rule! {
+              COLUMNS ~ "(" ~  ( #ident ~ "." ~ ( #ident ~ "." )? )? ~ "*" ~ ( EXCLUDE ~ #exclude_col )? ~ ")"
+            },
+            |(_, _, res, star, opt_exclude, _)| {
+                qualified_wildcard_transform(res, star, opt_exclude)
+            },
+        ),
+    ));
+
+    // columns('.*abc.*')
+    let columns_regexp = map(
         rule! {
-            ( #ident ~ "." ~ ( #ident ~ "." )? )? ~ "*" ~ ( EXCLUDE ~ #exclude_col )?
+            COLUMNS ~ "(" ~ #literal_string ~ ")"
         },
-        |(res, star, opt_exclude)| {
-            let exclude = opt_exclude.map(|(_, exclude)| exclude);
-            match res {
-                Some((fst, _, Some((snd, _)))) => SelectTarget::QualifiedName {
-                    qualified: vec![
-                        Indirection::Identifier(fst),
-                        Indirection::Identifier(snd),
-                        Indirection::Star(Some(star.span)),
-                    ],
-                    exclude,
-                },
-                Some((fst, _, None)) => SelectTarget::QualifiedName {
-                    qualified: vec![
-                        Indirection::Identifier(fst),
-                        Indirection::Star(Some(star.span)),
-                    ],
-                    exclude,
-                },
-                None => SelectTarget::QualifiedName {
-                    qualified: vec![Indirection::Star(Some(star.span))],
-                    exclude,
-                },
-            }
+        |(t, _, s, _)| SelectTarget::StarColumns {
+            qualified: vec![Indirection::Star(Some(t.span))],
+            column_filter: Some(ColumnFilter::Lambda(Lambda {
+                params: vec![Identifier::from_name("_t")],
+                expr: Box::new(Expr::BinaryOp {
+                    span: Some(t.span),
+                    op: BinaryOperator::Regexp,
+                    left: Box::new(Expr::ColumnRef {
+                        span: None,
+                        database: None,
+                        table: None,
+                        column: ColumnID::Name(Identifier::from_name("_t")),
+                    }),
+                    right: Box::new(Expr::Literal {
+                        span: Some(t.span),
+                        lit: Literal::String(s),
+                    }),
+                }),
+            })),
         },
     );
+
+    // columns(a -> filter)
+    let columns_lambda = map(
+        rule! {
+            COLUMNS ~ "(" ~ #ident ~ "->" ~ #subexpr(0) ~ ")"
+        },
+        |(t, _, ident, _, expr, _)| SelectTarget::StarColumns {
+            qualified: vec![Indirection::Star(Some(t.span))],
+            column_filter: Some(ColumnFilter::Lambda(Lambda {
+                params: vec![ident],
+                expr: Box::new(expr),
+            })),
+        },
+    );
+
     let projection = map(
         rule! {
             #expr ~ #alias_name?
@@ -416,6 +476,8 @@ pub fn select_target(i: Input) -> IResult<SelectTarget> {
 
     rule!(
         #qualified_wildcard
+        | #columns_regexp
+        | #columns_lambda
         | #projection
     )(i)
 }
@@ -555,12 +617,16 @@ pub enum TableReferenceElement {
     },
     // `TABLE(expr)[ AS alias ]`
     TableFunction {
+        /// If the table function is a lateral table function
+        lateral: bool,
         name: Identifier,
         params: Vec<TableFunctionParam>,
         alias: Option<TableAlias>,
     },
     // Derived table, which can be a subquery or joined tables or combination of them
     Subquery {
+        /// If the subquery is a lateral subquery
+        lateral: bool,
         subquery: Box<Query>,
         alias: Option<TableAlias>,
     },
@@ -641,9 +707,10 @@ pub fn table_reference_element(i: Input) -> IResult<WithSpan<TableReferenceEleme
     );
     let table_function = map(
         rule! {
-            #function_name ~ "(" ~ #comma_separated_list0(table_function_param) ~ ")" ~ #table_alias?
+            LATERAL? ~ #function_name ~ "(" ~ #comma_separated_list0(table_function_param) ~ ")" ~ #table_alias?
         },
-        |(name, _, params, _, alias)| TableReferenceElement::TableFunction {
+        |(lateral, name, _, params, _, alias)| TableReferenceElement::TableFunction {
+            lateral: lateral.is_some(),
             name,
             params,
             alias,
@@ -651,9 +718,10 @@ pub fn table_reference_element(i: Input) -> IResult<WithSpan<TableReferenceEleme
     );
     let subquery = map(
         rule! {
-            "(" ~ #query ~ ")" ~ #table_alias?
+            LATERAL? ~ "(" ~ #query ~ ")" ~ #table_alias?
         },
-        |(_, subquery, _, alias)| TableReferenceElement::Subquery {
+        |(lateral, _, subquery, _, alias)| TableReferenceElement::Subquery {
+            lateral: lateral.is_some(),
             subquery: Box::new(subquery),
             alias,
         },
@@ -734,6 +802,7 @@ impl<'a, I: Iterator<Item = WithSpan<'a, TableReferenceElement>>> PrattParser<I>
                 unpivot,
             },
             TableReferenceElement::TableFunction {
+                lateral,
                 name,
                 params,
                 alias,
@@ -754,14 +823,20 @@ impl<'a, I: Iterator<Item = WithSpan<'a, TableReferenceElement>>> PrattParser<I>
                     .collect();
                 TableReference::TableFunction {
                     span: transform_span(input.span.0),
+                    lateral,
                     name,
                     params: normal_params,
                     named_params,
                     alias,
                 }
             }
-            TableReferenceElement::Subquery { subquery, alias } => TableReference::Subquery {
+            TableReferenceElement::Subquery {
+                lateral,
+                subquery,
+                alias,
+            } => TableReference::Subquery {
                 span: transform_span(input.span.0),
+                lateral,
                 subquery,
                 alias,
             },

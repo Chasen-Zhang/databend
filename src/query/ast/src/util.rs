@@ -43,7 +43,7 @@ macro_rules! rule {
 }
 
 pub fn match_text(text: &'static str) -> impl FnMut(Input) -> IResult<&Token> {
-    move |i| match i.0.get(0).filter(|token| token.text() == text) {
+    move |i| match i.0.first().filter(|token| token.text() == text) {
         Some(token) => Ok((i.slice(1..), token)),
         _ => Err(nom::Err::Error(Error::from_error_kind(
             i,
@@ -53,7 +53,7 @@ pub fn match_text(text: &'static str) -> impl FnMut(Input) -> IResult<&Token> {
 }
 
 pub fn match_token(kind: TokenKind) -> impl FnMut(Input) -> IResult<&Token> {
-    move |i| match i.0.get(0).filter(|token| token.kind == kind) {
+    move |i| match i.0.first().filter(|token| token.kind == kind) {
         Some(token) => Ok((i.slice(1..), token)),
         _ => Err(nom::Err::Error(Error::from_error_kind(
             i,
@@ -63,7 +63,7 @@ pub fn match_token(kind: TokenKind) -> impl FnMut(Input) -> IResult<&Token> {
 }
 
 pub fn any_token(i: Input) -> IResult<&Token> {
-    match i.0.get(0).filter(|token| token.kind != EOI) {
+    match i.0.first().filter(|token| token.kind != EOI) {
         Some(token) => Ok((i.slice(1..), token)),
         _ => Err(nom::Err::Error(Error::from_error_kind(
             i,
@@ -147,7 +147,7 @@ fn non_reserved_keyword(
 ) -> impl FnMut(Input) -> IResult<&Token> {
     move |i: Input| match i
         .0
-        .get(0)
+        .first()
         .filter(|token| token.kind.is_keyword() && !is_reserved_keyword(&token.kind))
     {
         Some(token) => Ok((i.slice(1..), token)),
@@ -161,10 +161,7 @@ fn non_reserved_keyword(
 /// Parse one to two idents separated by a dot, fulfilling from the right.
 ///
 /// Example: `table.column`
-#[allow(clippy::needless_lifetimes)]
-pub fn dot_separated_idents_1_to_2<'a>(
-    i: Input<'a>,
-) -> IResult<'a, (Option<Identifier>, Identifier)> {
+pub fn dot_separated_idents_1_to_2(i: Input) -> IResult<(Option<Identifier>, Identifier)> {
     map(
         rule! {
            #ident ~ ("." ~ #ident)?
@@ -176,13 +173,12 @@ pub fn dot_separated_idents_1_to_2<'a>(
     )(i)
 }
 
-/// Parse one two three idents separated by a dot, fulfilling from the right.
+/// Parse one to three idents separated by a dot, fulfilling from the right.
 ///
 /// Example: `db.table.column`
-#[allow(clippy::needless_lifetimes)]
-pub fn dot_separated_idents_1_to_3<'a>(
-    i: Input<'a>,
-) -> IResult<'a, (Option<Identifier>, Option<Identifier>, Identifier)> {
+pub fn dot_separated_idents_1_to_3(
+    i: Input,
+) -> IResult<(Option<Identifier>, Option<Identifier>, Identifier)> {
     map(
         rule! {
             #ident ~ ("." ~ #ident ~ ("." ~ #ident)?)?
@@ -409,3 +405,41 @@ where
         Ok((rest, expr))
     }
 }
+
+macro_rules! declare_experimental_feature {
+    ($check_fn_name: ident, $feature_name: literal) => {
+        pub fn $check_fn_name<'a, O, F>(
+            is_exclusive: bool,
+            mut parser: F,
+        ) -> impl FnMut(Input<'a>) -> IResult<'a, O>
+        where
+            F: nom::Parser<Input<'a>, O, Error<'a>>,
+        {
+            move |input: Input| {
+                parser.parse(input).and_then(|(i, res)| {
+                    if input.1.is_experimental() {
+                        Ok((i, res))
+                    } else {
+                        i.2.clear();
+                        let error = Error::from_error_kind(
+                            input,
+                            ErrorKind::Other(
+                                concat!(
+                                    $feature_name,
+                                    " only works in experimental dialect, try `set sql_dialect = experimental`"
+                                )
+                            ),
+                        );
+                        if is_exclusive {
+                            Err(nom::Err::Failure(error))
+                        } else {
+                            Err(nom::Err::Error(error))
+                        }
+                    }
+                })
+            }
+        }
+    };
+}
+
+declare_experimental_feature!(check_experimental_chain_function, "chain function");

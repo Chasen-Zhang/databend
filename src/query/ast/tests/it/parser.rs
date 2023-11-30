@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fmt::Debug;
+use std::fmt::Display;
 use std::io::Write;
 
 use common_ast::display_parser_error;
@@ -25,49 +27,61 @@ use common_ast::parser::tokenize_sql;
 use common_ast::rule;
 use common_ast::Backtrace;
 use common_ast::Dialect;
+use common_ast::IResult;
 use common_ast::Input;
-use common_exception::Result;
 use goldenfile::Mint;
-use nom::Parser;
 
-macro_rules! run_parser {
-    ($file:expr, $parser:expr, $source:expr $(,)*) => {
-        let tokens = Tokenizer::new($source).collect::<Result<Vec<_>>>().unwrap();
-        let backtrace = Backtrace::new();
-        let parser = $parser;
-        let mut parser = rule! { #parser ~ &EOI };
-        match parser.parse(Input(&tokens, Dialect::PostgreSQL, &backtrace)) {
-            Ok((i, (output, _))) => {
-                assert_eq!(i[0].kind, TokenKind::EOI);
-                writeln!($file, "---------- Input ----------").unwrap();
-                writeln!($file, "{}", $source).unwrap();
-                writeln!($file, "---------- Output ---------").unwrap();
-                writeln!($file, "{}", output).unwrap();
-                writeln!($file, "---------- AST ------------").unwrap();
-                writeln!($file, "{:#?}", output).unwrap();
-                writeln!($file, "\n").unwrap();
-            }
-            Err(nom::Err::Error(err) | nom::Err::Failure(err)) => {
-                let report = display_parser_error(err, $source).trim_end().to_string();
-                writeln!($file, "---------- Input ----------").unwrap();
-                writeln!($file, "{}", $source).unwrap();
-                writeln!($file, "---------- Output ---------").unwrap();
-                writeln!($file, "{}", report).unwrap();
-                writeln!($file, "\n").unwrap();
-            }
-            Err(nom::Err::Incomplete(_)) => unreachable!(),
+fn run_parser<P, O>(file: &mut dyn Write, parser: P, src: &str)
+where
+    P: FnMut(Input) -> IResult<O>,
+    O: Debug + Display,
+{
+    run_parser_with_dialect(file, parser, Dialect::PostgreSQL, src)
+}
+
+fn run_parser_with_dialect<P, O>(file: &mut dyn Write, parser: P, dialect: Dialect, src: &str)
+where
+    P: FnMut(Input) -> IResult<O>,
+    O: Debug + Display,
+{
+    let tokens = tokenize_sql(src).unwrap();
+    let backtrace = Backtrace::new();
+    let parser = parser;
+    let mut parser = rule! { #parser ~ &EOI };
+    match parser(Input(&tokens, dialect, &backtrace)) {
+        Ok((i, (output, _))) => {
+            assert_eq!(i[0].kind, TokenKind::EOI);
+            writeln!(file, "---------- Input ----------").unwrap();
+            writeln!(file, "{}", src).unwrap();
+            writeln!(file, "---------- Output ---------").unwrap();
+            writeln!(file, "{}", output).unwrap();
+            writeln!(file, "---------- AST ------------").unwrap();
+            writeln!(file, "{:#?}", output).unwrap();
+            writeln!(file, "\n").unwrap();
         }
-    };
+        Err(nom::Err::Error(err) | nom::Err::Failure(err)) => {
+            let report = display_parser_error(err, src).trim_end().to_string();
+            writeln!(file, "---------- Input ----------").unwrap();
+            writeln!(file, "{}", src).unwrap();
+            writeln!(file, "---------- Output ---------").unwrap();
+            writeln!(file, "{}", report).unwrap();
+            writeln!(file, "\n").unwrap();
+        }
+        Err(nom::Err::Incomplete(_)) => unreachable!(),
+    }
 }
 
 #[test]
 fn test_statement() {
     let mut mint = Mint::new("tests/it/testdata");
-    let mut file = mint.new_goldenfile("statement.txt").unwrap();
+    let file = &mut mint.new_goldenfile("statement.txt").unwrap();
     let cases = &[
         r#"show databases"#,
         r#"show databases format TabSeparatedWithNamesAndTypes;"#,
         r#"show tables"#,
+        r#"show drop tables"#,
+        r#"show drop tables like 't%'"#,
+        r#"show drop tables where name='t'"#,
         r#"show tables format TabSeparatedWithNamesAndTypes;"#,
         r#"describe "name""with""quote";"#,
         r#"describe "name""""with""""quote";"#,
@@ -116,6 +130,10 @@ fn test_statement() {
         r#"drop view v;"#,
         r#"create view v1(c1) as select number % 3 as a from numbers(1000);"#,
         r#"alter view v1(c2) as select number % 3 as a from numbers(1000);"#,
+        r#"create stream if not exists test2.s2 on table test.t at (stream => test1.s1) comment = 'this is a stream';"#,
+        r#"show full streams from default.test2 like 's%';"#,
+        r#"describe stream test2.s2;"#,
+        r#"drop stream if exists test2.s2;"#,
         r#"rename table d.t to e.s;"#,
         r#"truncate table test;"#,
         r#"truncate table test_db.test;"#,
@@ -212,6 +230,7 @@ fn test_statement() {
         r#"VACUUM DROP TABLE RETAIN 20 HOURS;"#,
         r#"VACUUM DROP TABLE RETAIN 30 HOURS DRY RUN;"#,
         r#"VACUUM DROP TABLE FROM db RETAIN 40 HOURS;"#,
+        r#"VACUUM DROP TABLE FROM db RETAIN 40 HOURS LIMIT 10;"#,
         r#"CREATE TABLE t (a INT COMMENT 'col comment') COMMENT='table comment';"#,
         r#"GRANT CREATE, CREATE USER ON * TO 'test-grant';"#,
         r#"GRANT SELECT, CREATE ON * TO 'test-grant';"#,
@@ -439,6 +458,11 @@ fn test_statement() {
         r#"GRANT all ON stage s1 TO a;"#,
         r#"GRANT read ON stage s1 TO a;"#,
         r#"GRANT write ON stage s1 TO a;"#,
+        r#"REVOKE write ON stage s1 FROM a;"#,
+        r#"GRANT all ON UDF a TO 'test-grant';"#,
+        r#"GRANT usage ON UDF a TO 'test-grant';"#,
+        r#"REVOKE usage ON UDF a FROM 'test-grant';"#,
+        r#"REVOKE all ON UDF a FROM 'test-grant';"#,
         r#"REVOKE USAGE ON DATABASE db1 FROM SHARE a;"#,
         r#"REVOKE SELECT ON TABLE db1.tb1 FROM SHARE a;"#,
         r#"ALTER SHARE a ADD TENANTS = b,c;"#,
@@ -494,6 +518,20 @@ fn test_statement() {
         r#"SHOW TASKS"#,
         r#"EXECUTE TASK MyTask"#,
         r#"DESC TASK MyTask"#,
+        r#"CREATE CONNECTION IF NOT EXISTS my_conn STORAGE_TYPE='s3'"#,
+        r#"CREATE CONNECTION IF NOT EXISTS my_conn STORAGE_TYPE='s3' any_arg='any_value'"#,
+        r#"DROP CONNECTION IF EXISTS my_conn;"#,
+        r#"DESC CONNECTION my_conn;"#,
+        r#"SHOW CONNECTIONS;"#,
+        // pipes
+        r#"CREATE PIPE IF NOT EXISTS MyPipe1 AUTO_INGEST = TRUE COMMENT = 'This is test pipe 1' AS COPY INTO MyTable1 FROM '@~/MyStage1' FILE_FORMAT = (TYPE = 'CSV')"#,
+        r#"CREATE PIPE pipe1 AS COPY INTO db1.MyTable1 FROM @~/mybucket/data.csv"#,
+        r#"ALTER PIPE mypipe REFRESH"#,
+        r#"ALTER PIPE mypipe REFRESH PREFIX='d1/'"#,
+        r#"ALTER PIPE mypipe REFRESH PREFIX='d1/' MODIFIED_AFTER='2018-07-30T13:56:46-07:00'"#,
+        r#"ALTER PIPE mypipe SET PIPE_EXECUTION_PAUSED = true"#,
+        r#"DROP PIPE mypipe"#,
+        r#"DESC PIPE mypipe"#,
         "--各环节转各环节转各环节转各环节转各\n  select 34343",
         "-- 96477300355	31379974136	3.074486292973661\nselect 34343",
         "-- xxxxx\n  select 34343;",
@@ -519,7 +557,7 @@ fn test_statement() {
 #[test]
 fn test_statement_error() {
     let mut mint = Mint::new("tests/it/testdata");
-    let mut file = mint.new_goldenfile("statement-error.txt").unwrap();
+    let file = &mut mint.new_goldenfile("statement-error.txt").unwrap();
 
     let cases = &[
         r#"create table a.b (c integer not null 1, b float(10))"#,
@@ -546,8 +584,7 @@ fn test_statement_error() {
         r#"GRANT ROLE 'test' TO ROLE test-user;"#,
         r#"GRANT SELECT, ALL PRIVILEGES, CREATE ON * TO 'test-grant';"#,
         r#"GRANT SELECT, CREATE ON *.c TO 'test-grant';"#,
-        r#"GRANT all ON UDF a TO 'test-grant';"#,
-        r#"GRANT usage ON UDF a TO 'test-grant';"#,
+        r#"GRANT select ON UDF a TO 'test-grant';"#,
         r#"REVOKE SELECT, CREATE, ALL PRIVILEGES ON * FROM 'test-grant';"#,
         r#"REVOKE SELECT, CREATE ON * TO 'test-grant';"#,
         r#"COPY INTO mytable FROM 's3://bucket' CREDENTIAL = ();"#,
@@ -585,6 +622,7 @@ fn test_statement_error() {
                     type = CSV,
                     error_on_column_count_mismatch = 1
                 )"#,
+        r#"CREATE CONNECTION IF NOT EXISTS my_conn"#,
     ];
 
     for case in cases {
@@ -600,9 +638,10 @@ fn test_statement_error() {
 #[test]
 fn test_query() {
     let mut mint = Mint::new("tests/it/testdata");
-    let mut file = mint.new_goldenfile("query.txt").unwrap();
+    let file = &mut mint.new_goldenfile("query.txt").unwrap();
     let cases = &[
         r#"select * exclude c1, b.* exclude (c2, c3, c4) from customer inner join orders on a = b limit 1"#,
+        r#"select columns('abc'), columns(a -> length(a) = 3) from t"#,
         r#"select * from customer inner join orders"#,
         r#"select * from customer cross join orders"#,
         r#"select * from customer inner join orders on (a = b)"#,
@@ -650,17 +689,19 @@ fn test_query() {
         r#"SELECT * FROM ((SELECT * FROM xyu ORDER BY x, y)) AS xyu"#,
         r#"SELECT * FROM (VALUES(1,1),(2,null),(null,5)) AS t(a,b)"#,
         r#"VALUES(1,'a'),(2,'b'),(null,'c') order by col0 limit 2"#,
+        r#"select * from t left join lateral(select 1) on true, lateral(select 2)"#,
+        r#"select * from t, lateral flatten(input => u.col) f"#,
     ];
 
     for case in cases {
-        run_parser!(file, query, case);
+        run_parser(file, query, case);
     }
 }
 
 #[test]
 fn test_query_error() {
     let mut mint = Mint::new("tests/it/testdata");
-    let mut file = mint.new_goldenfile("query-error.txt").unwrap();
+    let file = &mut mint.new_goldenfile("query-error.txt").unwrap();
     let cases = &[
         r#"select * from customer join where a = b"#,
         r#"select * from join customer"#,
@@ -672,14 +713,14 @@ fn test_query_error() {
     ];
 
     for case in cases {
-        run_parser!(file, query, case);
+        run_parser(file, query, case);
     }
 }
 
 #[test]
 fn test_expr() {
     let mut mint = Mint::new("tests/it/testdata");
-    let mut file = mint.new_goldenfile("expr.txt").unwrap();
+    let file = &mut mint.new_goldenfile("expr.txt").unwrap();
 
     let cases = &[
         r#"a"#,
@@ -761,17 +802,38 @@ fn test_expr() {
         r#"COUNT() OVER (ORDER BY hire_date ROWS 3 PRECEDING)"#,
         r#"ARRAY_APPLY([1,2,3], x -> x + 1)"#,
         r#"ARRAY_FILTER(col, y -> y % 2 = 0)"#,
+        r#"(current_timestamp, current_timestamp(), now())"#,
     ];
 
     for case in cases {
-        run_parser!(file, expr, case);
+        run_parser(file, expr, case);
+    }
+}
+
+#[test]
+fn test_experimental_expr() {
+    let mut mint = Mint::new("tests/it/testdata");
+    let file = &mut mint.new_goldenfile("experimental_expr.txt").unwrap();
+
+    let cases = &[
+        r#"a"#,
+        r#"a.add(b)"#,
+        r#"a.sub(b).add(e)"#,
+        r#"a.sub(b).add(e)"#,
+        r#"1 + {'k1': 4}.k1"#,
+        r#"'3'.plus(4)"#,
+        r#"(3).add({'k1': 4 }.k1)"#,
+    ];
+
+    for case in cases {
+        run_parser_with_dialect(file, expr, Dialect::Experimental, case);
     }
 }
 
 #[test]
 fn test_expr_error() {
     let mut mint = Mint::new("tests/it/testdata");
-    let mut file = mint.new_goldenfile("expr-error.txt").unwrap();
+    let file = &mut mint.new_goldenfile("expr-error.txt").unwrap();
 
     let cases = &[
         r#"5 * (a and ) 1"#,
@@ -779,13 +841,14 @@ fn test_expr_error() {
         r#"CAST(col1 AS foo)"#,
         r#"1 a"#,
         r#"CAST(col1)"#,
+        r#"a.add(b)"#,
         r#"G.E.B IS NOT NULL AND
             col1 NOT BETWEEN col2 AND
                 AND 1 + col3 DIV sum(col4)"#,
     ];
 
     for case in cases {
-        run_parser!(file, expr, case);
+        run_parser(file, expr, case);
     }
 }
 

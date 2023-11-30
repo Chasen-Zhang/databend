@@ -16,10 +16,10 @@ use std::sync::Arc;
 
 use common_catalog::table_context::TableContext;
 use common_exception::Result;
-use common_pipeline_core::pipe::Pipe;
 use common_pipeline_core::processors::create_resize_item;
+use common_pipeline_core::Pipe;
 use common_pipeline_core::Pipeline;
-use common_pipeline_transforms::processors::transforms::create_dummy_item;
+use common_pipeline_transforms::processors::create_dummy_item;
 
 use crate::api::rpc::exchange::exchange_params::ExchangeParams;
 use crate::api::rpc::exchange::exchange_sink_writer::create_writer_item;
@@ -27,6 +27,7 @@ use crate::api::rpc::exchange::exchange_source::via_exchange_source;
 use crate::api::rpc::exchange::exchange_source_reader::create_reader_item;
 use crate::api::rpc::exchange::exchange_transform_shuffle::exchange_shuffle;
 use crate::api::ExchangeInjector;
+use crate::clusters::ClusterHelper;
 use crate::sessions::QueryContext;
 
 pub struct ExchangeTransform;
@@ -59,16 +60,28 @@ impl ExchangeTransform {
                     items.push(match destination_id == &params.executor_id {
                         true if max_threads == 1 => create_dummy_item(),
                         true => create_resize_item(1, max_threads),
-                        false => create_writer_item(ctx.clone(), sender, false),
+                        false => create_writer_item(
+                            ctx.clone(),
+                            sender,
+                            false,
+                            destination_id,
+                            params.fragment_id,
+                            &ctx.get_cluster().local_id(),
+                        ),
                     });
                 }
 
                 let mut nodes_source = 0;
                 let receivers = exchange_manager.get_flight_receiver(&exchange_params)?;
-                for (destination_id, receiver) in params.destination_ids.iter().zip(receivers) {
-                    if destination_id != &params.executor_id {
+                for (destination_id, receiver) in receivers {
+                    if destination_id != params.executor_id {
                         nodes_source += 1;
-                        items.push(create_reader_item(receiver));
+                        items.push(create_reader_item(
+                            receiver,
+                            &destination_id,
+                            &params.executor_id,
+                            params.fragment_id,
+                        ));
                     }
                 }
 

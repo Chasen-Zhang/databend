@@ -21,8 +21,8 @@ use common_expression::RemoteExpr;
 use common_functions::BUILTIN_FUNCTIONS;
 
 use crate::executor::explain::PlanStatsInfo;
-use crate::executor::PhysicalPlan;
-use crate::executor::PhysicalPlanBuilder;
+use crate::executor::physical_plan::PhysicalPlan;
+use crate::executor::physical_plan_builder::PhysicalPlanBuilder;
 use crate::optimizer::ColumnSet;
 use crate::optimizer::SExpr;
 use crate::IndexType;
@@ -93,11 +93,11 @@ impl PhysicalPlanBuilder {
         } else {
             let input = self.build(s_expr.child(0)?, required).await?;
             let eval_scalar = crate::plans::EvalScalar { items: used };
-            self.crate_eval_scalar(&eval_scalar, column_projections, input, stat_info)
+            self.create_eval_scalar(&eval_scalar, column_projections, input, stat_info)
         }
     }
 
-    pub(crate) fn crate_eval_scalar(
+    pub(crate) fn create_eval_scalar(
         &mut self,
         eval_scalar: &crate::plans::EvalScalar,
         column_projections: Vec<IndexType>,
